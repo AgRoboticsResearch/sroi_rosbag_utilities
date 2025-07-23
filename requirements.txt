@@ -12,3 +12,6 @@ scipy>=1.7.0
 
 # Additional utilities
 pathlib2>=2.3.0  # For Python 2/3 compatibility (if needed)
+
+
+pupil_apriltags>=1.0.4

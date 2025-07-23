@@ -92,6 +92,6 @@ Extract stereo images from ROS bag files:
 # In ROS1 env
 python extract_stereo_ros1.py /path/to/bag.bag /output/folder/ realsense_d435i --compressed
 
-# In env without ROS1
+# In env without ROS1 (Recommanded)
 python3 extract_stereo_rosbags.py /path/to/bag.bag /output/folder/ realsense_d435i --compressed
 ```
