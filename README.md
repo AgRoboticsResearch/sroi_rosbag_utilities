@@ -2,23 +2,6 @@
 
 A Python utility for segmenting ROS bag files based on action status messages. This tool extracts segments from ROS bag files where the `/upi/status/is_action` topic is `true`.
 
-## Requirements
-
-- Python 3.x
-- rosbag package (`pip install rosbag`)
-
-## Installation
-
-1. Clone this repository:
-```bash
-git clone <repository-url>
-cd <repository-directory>
-```
-
-2. Install dependencies:
-```bash
-pip install rosbag
-```
 
 ## Usage
 
@@ -84,14 +67,21 @@ The script will create segmented bag files with the following naming convention:
 - The script automatically creates the output directory if it doesn't exist
 
 
-# Extract Images
+# Full Post Processing
 
-Extract stereo images from ROS bag files:
+Complete workflow for processing ROS bag files from segmentation to gripper estimation:
 
-```bash 
-# In ROS1 env
-python extract_stereo_ros1.py /path/to/bag.bag /output/folder/ realsense_d435i --compressed
+## Step 1: Segment ROS Bags
+```bash
+python rosbag_segment.py input.bag -o /path/to/output
+```
 
-# In env without ROS1 (Recommanded)
+## Step 2: Extract Images
+```bash
 python3 extract_stereo_rosbags.py /path/to/bag.bag /output/folder/ realsense_d435i --compressed
+```
+
+## Step 3: Extract Gripper
+```bash
+python gripper_estimation_april_tag.py /output/folder/
 ```
