@@ -88,6 +88,10 @@ The script will create segmented bag files with the following naming convention:
 
 Extract stereo images from ROS bag files:
 
-```bash
-python extract_stereo_ros1.py /ldata/data/spi/z1_calib/z1_rs_calib_lab_2025-01-22-08-19-38.bag /ldata/data/temp/spi_postproc/ realsense_d435i --compressed
+```bash 
+# In ROS1 env
+python extract_stereo_ros1.py /path/to/bag.bag /output/folder/ realsense_d435i --compressed
+
+# In env without ROS1
+python3 extract_stereo_rosbags.py /path/to/bag.bag /output/folder/ realsense_d435i --compressed
 ```

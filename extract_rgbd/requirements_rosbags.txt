@@ -1,0 +1,14 @@
+# Requirements for extract_stereo_rosbags.py
+# Modern rosbags library for ROS1/ROS2 bag file processing
+rosbags>=0.9.0
+
+# Computer vision and image processing
+opencv-python>=4.5.0
+Pillow>=8.0.0
+
+# Scientific computing
+numpy>=1.21.0
+scipy>=1.7.0
+
+# Additional utilities
+pathlib2>=2.3.0  # For Python 2/3 compatibility (if needed)
