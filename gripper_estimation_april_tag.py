@@ -1,5 +1,7 @@
 import sys
 import cv2 as cv
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for headless operation
 import matplotlib.pyplot as plt
 import glob
 import copy
@@ -17,6 +19,7 @@ def parse_args():
 def check_tag_valid(tag, norminal_diag_distance=50, threshold=10):
     diag_distance_1 = np.linalg.norm(tag.corners[0] - tag.corners[2])
     diag_distance_2 = np.linalg.norm(tag.corners[1] - tag.corners[3])
+    print(f"diag_distance_1: {diag_distance_1}, diag_distance_2: {diag_distance_2}, norminal_diag_distance: {norminal_diag_distance}")
     if abs(diag_distance_1 - norminal_diag_distance) > threshold or abs(diag_distance_2 - norminal_diag_distance) > threshold:
         return False
     else:
@@ -30,7 +33,7 @@ def detect_april_tag(image, gripper_roi, at_detector, left_gripper_tag_id, right
     gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
     gray[0:gripper_roi, :] = 0
     ret = at_detector.detect(gray)
-    # print("detected tag: ", len(ret))
+    print("detected tag: ", ret)
     for res in ret:
         if res.tag_id == left_gripper_tag_id:
             if check_tag_valid(res, norminal_diag_distance=norminal_diag_distance, threshold=threshold):
@@ -87,13 +90,41 @@ def find_distances_max_min(distances, threshold=0.05, threshold_num=10):
     return ret_max_distance, ret_min_distance
 
 
+def save_gripper_distance_plot(gripper_distances_normalized, data_folder):
+    """
+    Create and save a time vs gripper distance plot.
+    
+    Args:
+        gripper_distances_normalized (np.array): Normalized gripper distances
+        data_folder (str): Path to save the plot
+    """
+    plt.figure(figsize=(12, 6))
+    time_indices = np.arange(len(gripper_distances_normalized))
+    plt.plot(time_indices, gripper_distances_normalized, 'b-', linewidth=1.5, label='Normalized Gripper Distance')
+    plt.xlabel('Frame Index (Time)')
+    plt.ylabel('Normalized Gripper Distance')
+    plt.title('Time vs Gripper Distance')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    
+    plot_path = data_folder + "gripper_distances.jpg"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print("Saved gripper distance plot to", plot_path)
+
+
 def main(data_folder):
+    # Ensure data_folder ends with a forward slash
+    if not data_folder.endswith('/'):
+        data_folder += '/'
+    
     gripper_roi = 390 # ROI for gripper detection 5mm
     tag_family = "tag16h5"
     left_gripper_tag_id = 0
     right_gripper_tag_id = 15
-    norminal_diag_distance = 50
-    threshold = 10
+    norminal_diag_distance = 75
+    threshold = 20
 
     at_detector = Detector(
     families=tag_family,
@@ -108,11 +139,11 @@ def main(data_folder):
     color_cam_proj_mat = np.eye(4)
     color_cam_proj_mat[:3, :] = np.loadtxt(data_folder + "camera_info_color.txt")
     print(color_cam_proj_mat)
-    image_nums = len(glob.glob( data_folder + f"/color_*.png"))
+    image_nums = len(glob.glob( data_folder + f"color_*.png"))
     print("image_nums: ", image_nums)
     gripper_distances = []
     for idx in tqdm(range(image_nums)):
-        color_image_path = data_folder + f"/color_{idx:06d}.png"
+        color_image_path = data_folder + f"color_{idx:06d}.png"
         color_image = cv.imread(color_image_path)
         gripper_distance = detect_april_tag(color_image, gripper_roi, at_detector, left_gripper_tag_id, right_gripper_tag_id, norminal_diag_distance, threshold)
         gripper_distances.append(gripper_distance)
@@ -140,8 +171,11 @@ def main(data_folder):
     gripper_distances_normalized[gripper_distances_normalized > 1] = 1
     gripper_distances_normalized[gripper_distances_normalized < 0] = 0
 
-    np.savetxt(data_folder + "/gripper_distances.txt", gripper_distances_normalized)
-    print("Finished processing gripper distances to file", data_folder + "/gripper_distances.txt")
+    np.savetxt(data_folder + "gripper_distances.txt", gripper_distances_normalized)
+    print("Finished processing gripper distances to file", data_folder + "gripper_distances.txt")
+
+    # Create and save time vs gripper distance plot
+    save_gripper_distance_plot(gripper_distances_normalized, data_folder)
 
 if __name__ == "__main__":
     args = parse_args()
