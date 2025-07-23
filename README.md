@@ -75,9 +75,19 @@ The script will create segmented bag files with the following naming convention:
 - If no template is specified: `{original_filename}_segment_{number}.bag`
 - If template is specified: Uses the provided template with `{}` replaced by the segment number
 
+
 ## Notes
 
 - The script looks for the `/upi/status/is_action` topic in the bag files
 - Segments are created based on continuous `true` values in the action status
 - Progress and results are displayed in the console during processing
 - The script automatically creates the output directory if it doesn't exist
+
+
+# Extract Images
+
+Extract stereo images from ROS bag files:
+
+```bash
+python extract_stereo_ros1.py /ldata/data/spi/z1_calib/z1_rs_calib_lab_2025-01-22-08-19-38.bag /ldata/data/temp/spi_postproc/ realsense_d435i --compressed
+```
