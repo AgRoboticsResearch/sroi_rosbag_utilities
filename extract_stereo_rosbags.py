@@ -7,6 +7,7 @@ This script replaces the rosbag dependency with rosbags library for better perfo
 import numpy as np
 import cv2
 import os
+import json
 import argparse
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
@@ -214,14 +215,24 @@ class RosbagImageExtractor:
             proj_mat_right = np.array(right_cam_info['P']).reshape(3, 4)
             proj_mat_left = np.array(left_cam_info['P']).reshape(3, 4)
             
-            # Save camera info
+            # Save camera info as text files (existing functionality)
             np.savetxt(self.save_folder + "camera_info_right.txt", proj_mat_right)
             np.savetxt(self.save_folder + "camera_info_left.txt", proj_mat_left)
+            
+            # Save detailed camera info as JSON files
+            with open(self.save_folder + "camera_info_right.json", "w") as f:
+                json.dump(right_cam_info, f, indent=2)
+            with open(self.save_folder + "camera_info_left.json", "w") as f:
+                json.dump(left_cam_info, f, indent=2)
             
             if self.camera_type == "realsense_d435i":
                 color_cam_info = self.get_camera_info(reader, self.color_camera_info_topic)
                 proj_mat_color = np.array(color_cam_info['P']).reshape(3, 4)
                 np.savetxt(self.save_folder + "camera_info_color.txt", proj_mat_color)
+                
+                # Save color camera info as JSON
+                with open(self.save_folder + "camera_info_color.json", "w") as f:
+                    json.dump(color_cam_info, f, indent=2)
             
             # Create timelists
             print("Creating timestamp lists...")

@@ -71,17 +71,22 @@ The script will create segmented bag files with the following naming convention:
 
 Complete workflow for processing ROS bag files from segmentation to gripper estimation:
 
-## Step 1: Segment ROS Bags
+### Step 1: Segment ROS Bags
 ```bash
 python rosbag_segment.py input.bag -o /path/to/output
 ```
 
-## Step 2: Extract Images
+### Step 2: Extract Images
 ```bash
 python3 extract_stereo_rosbags.py /path/to/bag.bag /output/folder/ realsense_d435i --compressed
 ```
 
-## Step 3: Extract Gripper
+### Step 3: Extract Gripper
 ```bash
 python gripper_estimation_april_tag.py /output/folder/
+```
+
+### Step 4: Extract Images
+```bash
+python3 create_orb_slam_yaml.py /output/folder/ realsense_d435i
 ```
