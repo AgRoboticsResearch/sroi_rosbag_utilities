@@ -68,8 +68,8 @@ def inspect_dataset():
         print(f"\nImage statistics:")
         print(f"  Image shape: {image.shape}")
         print(f"  Image dtype: {image.dtype}")
-        print(f"  Image min: {np.min(image)}")
-        print(f"  Image max: {np.max(image)}")
+        print(f"  Image min: {image.min().item()}")
+        print(f"  Image max: {image.max().item()}")
         
         return dataset
         
