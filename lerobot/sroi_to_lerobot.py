@@ -233,6 +233,7 @@ def create_lerobot_dataset(
             "observation.images.camera": image,
             "observation.state": state,
             "action": action,
+            "task": single_task,
         }
         
         dataset.add_frame(frame)
