@@ -1,106 +1,105 @@
 # SROI to LeRobot Dataset Converter
 
-This script converts robot end-effector trajectory data from SROI format to LeRobot dataset format for machine learning training.
+This converter transforms SROI-format robot end-effector trajectory recordings into a LeRobot v3.0 compatible dataset.
 
-## Features
+The converter reads end-effector poses, gripper distances and per-frame camera images and produces a single episode that follows the LeRobot v3.0 feature contract used by the `so100`/EE pipelines.
 
-- Converts 4x4 transformation matrices to end-effector deltas (position + orientation)
-- Processes gripper distance data
-- Handles camera images (color_*.png)
-- Creates LeRobot-compatible datasets with proper video encoding
-- Action space: `["delta_x_ee", "delta_y_ee", "delta_z_ee", "delta_roll_ee", "delta_pitch_ee", "delta_yaw_ee"]`
+## Highlights
 
-## Data Format Expected
+- Produces LeRobot v3.0 datasets (features schema compatible with `ForwardKinematicsJointsToEE` / EE pipelines)
+- Stores end-effector pose as rotation-vector (`ee.wx, ee.wy, ee.wz`) + translation (`ee.x, ee.y, ee.z`) and gripper position
+- Saves `observation.images.camera` as video frames (CHW) and writes Parquet metadata
+- Action and observation feature shapes match the recording example in `examples/so100_to_so100_EE/record.py`
 
-Your data directory should contain:
+## Data Layout Expected
+
+Your data directory should contain at least:
+
 ```
 data_directory/
-├── CameraTrajectoryTransformed.txt  # End-effector trajectory (timestamp + 3x4 transformation matrix)
-├── gripper_distances.txt            # Gripper distance values (one per line)
-├── color_000000.png                 # Camera images
+├── CameraTrajectoryTransformed.txt   # timestamps + 3x4 transform per frame
+├── gripper_distances.txt             # one gripper measurement per line
+├── color_000000.png                  # camera images (color_*.png)
 ├── color_000001.png
 └── ...
 ```
 
 ## Usage
 
-### Basic Usage
+Run the converter directly from anywhere (it will add the local `lerobot` package to `sys.path`):
 
 ```bash
-cd /home/zfei/codes/lerobot
-python /path/to/sroi_to_lerobot.py \
-    --data_path "/mnt/ldata/data/spi/spi/rs435_2025-07-23-09-10-02_sb_lab_picking/postproc/rs435_2025-07-23-09-10-02_segment_1/" \
+python /home/zfei/code/sroi_rosbag_utilities/lerobot/sroi_to_lerobot.py \
+    --data_path "/path/to/your/segment/" \
     --repo_id "your_username/your_dataset_name" \
     --fps 30 \
     --root "/tmp/lerobot_datasets" \
-    --task "Robot end-effector manipulation task"
+    --task "End-effector manipulation task"
 ```
 
-### Push to Hugging Face Hub
+To push the created dataset to the Hugging Face Hub add `--push_to_hub` and provide a `--repo_id` that you own:
 
 ```bash
-cd /home/zfei/codes/lerobot
-python /path/to/sroi_to_lerobot.py \
-    --data_path "/your/data/path/" \
+python /home/zfei/code/sroi_rosbag_utilities/lerobot/sroi_to_lerobot.py \
+    --data_path "/path/to/your/segment/" \
     --repo_id "your_username/your_dataset_name" \
     --push_to_hub \
     --task "Your task description"
 ```
 
-### Quick Test
+There is also an example wrapper `example_convert.py` and a small `test_conversion.py` in the same folder for quick local testing.
 
-```bash
-cd /home/zfei/codes/lerobot
-python /home/zfei/codes/sroi/sroi_rosbag_utilities/lerobot/test_conversion.py
+## CLI Arguments
+
+- `--data_path` (required): Path to the SROI segment folder
+- `--repo_id` (required): Dataset repo id used for `LeRobotDataset.create` (e.g. `username/dataset`)
+- `--fps`: Frames per second for the dataset (default: `30`)
+- `--root`: Filesystem root where dataset is written (defaults to LeRobot internal default if omitted)
+- `--push_to_hub`: If set, pushes the saved dataset to the HF Hub
+- `--task`: Task description string stored with each frame
+
+## Produced LeRobot v3.0 Feature Schema
+
+The converter creates the following core features (matching the pipeline expectations in `record.py`):
+
+- `observation.images.camera`:
+    - `dtype`: `video`
+    - `shape`: `(channels, height, width)` (CHW per-frame images)
+    - `names`: `['channels', 'height', 'width']`
+
+- `observation.state`:
+    - `dtype`: `float32`
+    - `shape`: `[7]`
+    - `names`: `['ee.x','ee.y','ee.z','ee.wx','ee.wy','ee.wz','ee.gripper_pos']`
+
+- `action`:
+    - `dtype`: `float32`
+    - `shape`: `[7]`
+    - `names`: `['ee.x','ee.y','ee.z','ee.wx','ee.wy','ee.wz','ee.gripper_pos']`
+
+Notes:
+
+- The `ee.wx/wy/wz` fields store the rotation vector (axis-angle) representation (the same `rotvec` used in the LeRobot pipelines), not Euler angles. This matches the `ForwardKinematicsJointsToEE` and `InverseKinematicsEEToJoints` processors.
+- `action` stores the *target* end-effector pose for the next timestep (so policies operating on EE-space can be trained directly).
+
+## Processing Steps (high level)
+
+1. Load `CameraTrajectoryTransformed.txt` and parse the per-frame 3x4 transforms.
+2. Convert each 3x4 into a 4x4 pose matrix and extract translation (`ee.x, ee.y, ee.z`) and rotation as a rotation-vector (`ee.wx, ee.wy, ee.wz`).
+3. Read `gripper_distances.txt` and align length with poses and images.
+4. Load `color_*.png` images, convert to CHW and write them as video frames into the LeRobot dataset.
+5. For each frame, create `observation.state` from the current pose+gripper and `action` from the next frame's pose+gripper (last frame repeats the final pose).
+6. Save the episode (Parquet + video files) and optionally push to the hub.
+
+## Error handling & validation
+
+- The script validates that the `--data_path` exists and prints a clear error if not.
+- It truncates arrays to the shortest modality (poses, gripper, images) and warns if images are missing.
+- It reports progress during conversion and raises exceptions for unrecoverable issues.
+
+## Example output
+
 ```
-
-## Arguments
-
-- `--data_path`: Path to SROI data directory (required)
-- `--repo_id`: Dataset repository ID, e.g., "username/dataset_name" (required)
-- `--fps`: Frames per second for the dataset (default: 30)
-- `--root`: Root directory for dataset storage (default: current directory)
-- `--push_to_hub`: Push dataset to Hugging Face Hub (flag)
-- `--task`: Task description for the dataset (default: "End-effector manipulation task")
-
-## Output Dataset Format
-
-The created LeRobot dataset contains:
-
-### Observations
-- `observation.images.camera`: Camera images (CHW format)
-- `observation.state`: 7D state vector [x, y, z, roll, pitch, yaw, gripper_distance]
-
-### Actions
-- `action`: 6D action vector [delta_x_ee, delta_y_ee, delta_z_ee, delta_roll_ee, delta_pitch_ee, delta_yaw_ee]
-
-## Technical Details
-
-### Coordinate System
-- Uses rotation matrices from the trajectory file
-- Converts to Euler angles (roll, pitch, yaw) using ZYX convention
-- Computes deltas between consecutive frames
-- Handles angle wrapping for orientation deltas
-
-### Data Processing
-1. Loads trajectory data and parses 3x4 transformation matrices
-2. Converts to 4x4 matrices by appending [0, 0, 0, 1]
-3. Extracts positions and converts rotation matrices to Euler angles
-4. Computes frame-to-frame deltas for actions
-5. Loads gripper distances and camera images
-6. Creates LeRobot dataset with proper video encoding
-
-### Error Handling
-- Validates data path existence
-- Ensures consistent data lengths across all modalities
-- Handles missing images gracefully
-- Provides detailed progress information
-
-## Example Output
-
-```
-Converting data from: /your/data/path/
-Creating dataset: your_username/your_dataset_name
 Original trajectory shape: (125, 13)
 Dataset length: 125 frames
 Adding frames to dataset...
@@ -113,9 +112,8 @@ Conversion successful!
 
 ## Dependencies
 
-- numpy
-- PIL (Pillow)
-- lerobot (LeRobot framework)
-- pathlib
+- `numpy`
+- `Pillow` (PIL)
+- `lerobot` (local codebase in `../lerobot`)
 
-Make sure to run from the lerobot directory to ensure proper imports.
+Run the converter from any location — the script will add the local `lerobot` package to `sys.path` so that the current repo is used.

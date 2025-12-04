@@ -19,43 +19,11 @@ from pathlib import Path
 from PIL import Image
 from typing import Dict, Any
 
-# Ensure we're using the right paths
-current_dir = os.getcwd()
-if 'lerobot' not in current_dir:
-    os.chdir('/home/zfei/codes/lerobot')
-
 # Add lerobot to path
-sys.path.insert(0, '/home/zfei/codes/lerobot/src')
+sys.path.insert(0, '/home/zfei/code/lerobot/src')
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-
-def euler_from_rotation_matrix(R):
-    """
-    Extract Euler angles (roll, pitch, yaw) from rotation matrix.
-    Uses ZYX convention (yaw, pitch, roll).
-    
-    Args:
-        R: 3x3 rotation matrix
-        
-    Returns:
-        roll, pitch, yaw in radians
-    """
-    # Extract roll, pitch, yaw from rotation matrix
-    sy = np.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
-    
-    singular = sy < 1e-6
-    
-    if not singular:
-        roll = np.arctan2(R[2, 1], R[2, 2])
-        pitch = np.arctan2(-R[2, 0], sy)
-        yaw = np.arctan2(R[1, 0], R[0, 0])
-    else:
-        roll = np.arctan2(-R[1, 2], R[1, 1])
-        pitch = np.arctan2(-R[2, 0], sy)
-        yaw = 0
-        
-    return roll, pitch, yaw
+from lerobot.utils.rotation import Rotation
 
 
 def load_trajectory_data(traj_path: str):
@@ -69,7 +37,7 @@ def load_trajectory_data(traj_path: str):
         timestamps: Array of timestamps
         poses: Array of 4x4 transformation matrices
         positions: Array of positions (x, y, z)
-        orientations: Array of orientations (roll, pitch, yaw)
+        rotvecs: Array of rotation vectors (wx, wy, wz)
     """
     # Load trajectory data, skipping comment lines
     traj = np.loadtxt(traj_path, delimiter=" ")
@@ -86,40 +54,13 @@ def load_trajectory_data(traj_path: str):
     
     # Extract positions and orientations
     positions = poses[:, :3, 3]  # Translation part
-    orientations = np.zeros((len(poses), 3))  # roll, pitch, yaw
+    rotvecs = np.zeros((len(poses), 3))  # wx, wy, wz
     
     for i, pose in enumerate(poses):
         rotation_matrix = pose[:3, :3]
-        roll, pitch, yaw = euler_from_rotation_matrix(rotation_matrix)
-        orientations[i] = [roll, pitch, yaw]
+        rotvecs[i] = Rotation.from_matrix(rotation_matrix).as_rotvec()
     
-    return timestamps, poses, positions, orientations
-
-
-def compute_deltas(positions, orientations):
-    """
-    Compute delta movements between consecutive frames.
-    
-    Args:
-        positions: Array of positions (N, 3)
-        orientations: Array of orientations (N, 3)
-        
-    Returns:
-        delta_positions: Array of position deltas (N-1, 3)
-        delta_orientations: Array of orientation deltas (N-1, 3)
-    """
-    delta_positions = np.diff(positions, axis=0)
-    delta_orientations = np.diff(orientations, axis=0)
-    
-    # Handle angle wrapping for orientation deltas
-    delta_orientations = np.where(delta_orientations > np.pi, 
-                                 delta_orientations - 2*np.pi, 
-                                 delta_orientations)
-    delta_orientations = np.where(delta_orientations < -np.pi, 
-                                 delta_orientations + 2*np.pi, 
-                                 delta_orientations)
-    
-    return delta_positions, delta_orientations
+    return timestamps, poses, positions, rotvecs
 
 
 def load_gripper_data(gripper_path: str):
@@ -179,7 +120,7 @@ def create_lerobot_dataset(
     
     # Load trajectory data
     traj_path = data_path / "CameraTrajectoryTransformed.txt"
-    timestamps, poses, positions, orientations = load_trajectory_data(str(traj_path))
+    timestamps, poses, positions, rotvecs = load_trajectory_data(str(traj_path))
     
     # Load gripper data
     gripper_path = data_path / "gripper_distances.txt"
@@ -189,31 +130,25 @@ def create_lerobot_dataset(
     min_length = min(len(timestamps), len(gripper_distances))
     timestamps = timestamps[:min_length]
     positions = positions[:min_length]
-    orientations = orientations[:min_length]
+    rotvecs = rotvecs[:min_length]
     gripper_distances = gripper_distances[:min_length]
     
     print(f"Dataset length: {min_length} frames")
-    
-    # Compute deltas for actions
-    delta_positions, delta_orientations = compute_deltas(positions, orientations)
-    
-    # For the first frame, use zero deltas
-    delta_positions = np.vstack([np.zeros(3), delta_positions])
-    delta_orientations = np.vstack([np.zeros(3), delta_orientations])
     
     # Check for image files
     image_files = sorted(list(data_path.glob("color_*.png")))
     if len(image_files) < min_length:
         print(f"Warning: Only {len(image_files)} images found, but {min_length} frames needed")
         min_length = min(min_length, len(image_files))
+        # Truncate other arrays
+        timestamps = timestamps[:min_length]
+        positions = positions[:min_length]
+        rotvecs = rotvecs[:min_length]
+        gripper_distances = gripper_distances[:min_length]
     
     # Load a sample image to get dimensions
     sample_image = load_image(str(image_files[0]))
     image_shape = sample_image.shape
-    
-    # Define action names
-    action_names = ["delta_x_ee", "delta_y_ee", "delta_z_ee", 
-                   "delta_roll_ee", "delta_pitch_ee", "delta_yaw_ee"]
     
     # Define dataset features
     features = {
@@ -224,13 +159,29 @@ def create_lerobot_dataset(
         },
         "observation.state": {
             "dtype": "float32",
-            "shape": (7,),  # x, y, z, roll, pitch, yaw, gripper_distance
-            "names": ["x", "y", "z", "roll", "pitch", "yaw", "gripper_distance"],
+            "names": [
+                "ee.x",
+                "ee.y",
+                "ee.z",
+                "ee.wx",
+                "ee.wy",
+                "ee.wz",
+                "ee.gripper_pos"
+            ],
+            "shape": (7,)
         },
         "action": {
             "dtype": "float32",
-            "shape": (6,),  # delta_x, delta_y, delta_z, delta_roll, delta_pitch, delta_yaw
-            "names": action_names,
+            "names": [
+                "ee.x",
+                "ee.y",
+                "ee.z",
+                "ee.wx",
+                "ee.wy",
+                "ee.wz",
+                "ee.gripper_pos"
+            ],
+            "shape": (7,)
         },
     }
     
@@ -239,7 +190,7 @@ def create_lerobot_dataset(
         repo_id=repo_id,
         fps=fps,
         root=root,
-        robot_type="custom_ee_robot",
+        robot_type="so100",
         features=features,
         use_videos=True,
         image_writer_threads=4,
@@ -253,40 +204,38 @@ def create_lerobot_dataset(
         # Load image
         image = load_image(str(image_files[i]))
         
-        # Prepare observation
-        observation = {
-            "images": {
-                "camera": image
-            },
-            "state": np.array([
-                positions[i, 0],  # x
-                positions[i, 1],  # y  
-                positions[i, 2],  # z
-                orientations[i, 0],  # roll
-                orientations[i, 1],  # pitch
-                orientations[i, 2],  # yaw
-                gripper_distances[i],  # gripper_distance
-            ], dtype=np.float32)
-        }
+        # Current state
+        state = np.array([
+            positions[i, 0],  # x
+            positions[i, 1],  # y  
+            positions[i, 2],  # z
+            rotvecs[i, 0],    # wx
+            rotvecs[i, 1],    # wy
+            rotvecs[i, 2],    # wz
+            gripper_distances[i],  # gripper_pos
+        ], dtype=np.float32)
         
-        # Prepare action
+        # Action (next state)
+        # For the last frame, we repeat the last state
+        next_idx = min(i + 1, min_length - 1)
         action = np.array([
-            delta_positions[i, 0],  # delta_x_ee
-            delta_positions[i, 1],  # delta_y_ee
-            delta_positions[i, 2],  # delta_z_ee
-            delta_orientations[i, 0],  # delta_roll_ee
-            delta_orientations[i, 1],  # delta_pitch_ee
-            delta_orientations[i, 2],  # delta_yaw_ee
+            positions[next_idx, 0],  # x
+            positions[next_idx, 1],  # y  
+            positions[next_idx, 2],  # z
+            rotvecs[next_idx, 0],    # wx
+            rotvecs[next_idx, 1],    # wy
+            rotvecs[next_idx, 2],    # wz
+            gripper_distances[next_idx],  # gripper_pos
         ], dtype=np.float32)
         
         # Build frame
         frame = {
             "observation.images.camera": image,
-            "observation.state": observation["state"],
+            "observation.state": state,
             "action": action,
         }
         
-        dataset.add_frame(frame, task=single_task)
+        dataset.add_frame(frame)
         
         if (i + 1) % 10 == 0:
             print(f"Processed {i + 1}/{min_length} frames")

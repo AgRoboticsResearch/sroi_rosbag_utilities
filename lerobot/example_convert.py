@@ -9,14 +9,14 @@ import os
 from pathlib import Path
 
 # Add paths
-sys.path.append('/home/zfei/codes/lerobot/src')
-sys.path.append('/home/zfei/codes/sroi/sroi_rosbag_utilities/lerobot')
+sys.path.append('/home/zfei/code/lerobot/src')
+sys.path.append('/home/zfei/code/sroi_rosbag_utilities/lerobot')
 
 def main():
     """Example usage of the converter."""
     
     # Your data path
-    data_path = "/mnt/ldata/data/spi/spi/rs435_2025-07-23-09-10-02_sb_lab_picking/postproc/rs435_2025-07-23-09-10-02_segment_1/"
+    data_path = "/media/zfei/d/data/spi/spi/rs435_2025-07-23-09-10-02_sb_lab_picking/postproc/rs435_2025-07-23-09-10-02_segment_1"
     
     # Check if data exists
     if not os.path.exists(data_path):
