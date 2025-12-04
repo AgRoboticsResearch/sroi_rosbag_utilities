@@ -6,7 +6,8 @@ evo_results/
 
 # C extensions
 *.so
-
+*.bag
+rs435_251203_1/
 # Distribution / packaging
 .Python
 build/
