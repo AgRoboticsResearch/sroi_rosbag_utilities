@@ -72,24 +72,25 @@ def transform_trajectory(traj):
     # Transformation from ORB-SLAM camera frame to X-forward frame
     # ORB-SLAM: X-right, Y-down, Z-forward
     # Target:   X-forward, Y-left, Z-up
-    T_init_cam_to_orb = np.array([
+    T_conv = np.array([
         [ 0, 0, 1, 0],  # Target X = ORB Z (forward)
         [-1, 0, 0, 0],  # Target Y = -ORB X (right -> left)
         [ 0,-1, 0, 0],  # Target Z = -ORB Y (down -> up)
         [ 0, 0, 0, 1]
     ])
+    T_conv_inv = np.linalg.inv(T_conv)
     
     # Transform all poses to be relative to initial camera frame with new coordinate system
     traj_transformed = np.zeros_like(traj)
     
     for i in range(len(traj)):
         # Current pose in world coordinates (ORB-SLAM frame)
-        T_orb_to_traj = traj[i]
+        T_old = traj[i]
         
-        # Transform to be relative to initial camera frame (still in ORB coordinates)
-        T_init_cam_to_traj = T_init_cam_to_orb @ T_orb_to_traj
+        # Apply similarity transform: T_new = T_conv * T_old * T_conv^-1
+        T_new = T_conv @ T_old @ T_conv_inv
         
-        traj_transformed[i] = T_init_cam_to_traj
+        traj_transformed[i] = T_new
     
     return traj_transformed
 
@@ -141,50 +142,17 @@ def save_transformed_trajectory(traj_transformed, timestamps, output_path):
             f.write(formatted_line + '\n')
 
 
-def main():
-    """Main function to process command line arguments and run transformation."""
-    parser = argparse.ArgumentParser(
-        description="Transform camera trajectory to initial camera frame with X-forward coordinate system",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    python transform_trajectory.py /path/to/data/folder
-    python transform_trajectory.py ./postproc/segment_1/
-        """
-    )
-    
-    parser.add_argument(
-        'folder_path',
-        type=str,
-        help='Path to folder containing times.txt and CameraTrajectory.txt'
-    )
-    
-    parser.add_argument(
-        '--output',
-        type=str,
-        default=None,
-        help='Output file path (default: CameraTrajectoryTransformed.txt in input folder)'
-    )
-    
-    args = parser.parse_args()
-    
-    # Validate input folder
-    folder_path = Path(args.folder_path)
-    if not folder_path.exists():
-        print(f"Error: Folder '{folder_path}' does not exist")
-        sys.exit(1)
-    
-    if not folder_path.is_dir():
-        print(f"Error: '{folder_path}' is not a directory")
-        sys.exit(1)
-    
-    # Set output path
-    if args.output:
-        output_path = args.output
-    else:
+def process_folder(folder_path, output_path=None):
+    """Process a single folder containing trajectory data."""
+    if not output_path:
         output_path = folder_path / "CameraTrajectoryTransformed.txt"
     
     try:
+        # Check if files exist to avoid error spam when recursive
+        if not (folder_path / "times.txt").exists() or not (folder_path / "CameraTrajectory.txt").exists():
+            return False
+            
+        print(f"\n--- Processing: {folder_path} ---")
         print(f"Loading trajectory data from: {folder_path}")
         traj, timestamps = load_trajectory_data(str(folder_path))
         print(f"Loaded {len(traj)} trajectory poses and {len(timestamps)} timestamps")
@@ -212,13 +180,75 @@ Examples:
         print(f"  X: [{traj_transformed[:, 0, 3].min():.3f}, {traj_transformed[:, 0, 3].max():.3f}]")
         print(f"  Y: [{traj_transformed[:, 1, 3].min():.3f}, {traj_transformed[:, 1, 3].max():.3f}]")
         print(f"  Z: [{traj_transformed[:, 2, 3].min():.3f}, {traj_transformed[:, 2, 3].max():.3f}]")
-        
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        return True
     except Exception as e:
-        print(f"Error processing trajectory: {e}")
+        print(f"Error processing trajectory in {folder_path}: {e}")
+        return False
+
+
+def main():
+    """Main function to process command line arguments and run transformation."""
+    parser = argparse.ArgumentParser(
+        description="Transform camera trajectory to initial camera frame with X-forward coordinate system",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python transform_trajectory.py /path/to/data/folder
+    python transform_trajectory.py ./postproc/segment_1/
+        """
+    )
+    
+    parser.add_argument(
+        'folder_path',
+        type=str,
+        help='Path to folder containing times.txt and CameraTrajectory.txt'
+    )
+    
+    parser.add_argument(
+        '--output',
+        type=str,
+        default=None,
+        help='Output file path (default: CameraTrajectoryTransformed.txt in input folder)'
+    )
+    
+    parser.add_argument(
+        '--recursive',
+        action='store_true',
+        help='Recursively search for folders containing times.txt and CameraTrajectory.txt'
+    )
+    
+    args = parser.parse_args()
+    
+    # Validate input folder
+    folder_path = Path(args.folder_path)
+    if not folder_path.exists():
+        print(f"Error: Folder '{folder_path}' does not exist")
         sys.exit(1)
+    
+    if not folder_path.is_dir():
+        print(f"Error: '{folder_path}' is not a directory")
+        sys.exit(1)
+    
+    # Process recursive or single folder
+    if args.recursive:
+        print(f"Searching recursively in {folder_path}...")
+        processed_count = 0
+        for root, dirs, files in os.walk(folder_path):
+            current_dir = Path(root)
+            if (current_dir / "times.txt").exists() and (current_dir / "CameraTrajectory.txt").exists():
+                out_path = Path(args.output) if args.output else None
+                if process_folder(current_dir, out_path):
+                    processed_count += 1
+        print(f"\nFinished. Processed {processed_count} folders.")
+    else:
+        out_path = Path(args.output) if args.output else None
+        
+        if not (folder_path / "times.txt").exists() or not (folder_path / "CameraTrajectory.txt").exists():
+            print(f"Error: Required files 'times.txt' and/or 'CameraTrajectory.txt' not found in '{folder_path}'")
+            print(f"To search subdirectories, use the --recursive flag.")
+            sys.exit(1)
+            
+        process_folder(folder_path, out_path)
 
 
 if __name__ == "__main__":

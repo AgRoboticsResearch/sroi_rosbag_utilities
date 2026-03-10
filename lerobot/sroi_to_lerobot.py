@@ -197,8 +197,8 @@ def create_lerobot_dataset(
         robot_type="so100",
         features=features,
         use_videos=True,
-        image_writer_threads=4,
-        image_writer_processes=0,
+        image_writer_threads=1,
+        image_writer_processes=1 ,
     )
 
     # Process each episode
