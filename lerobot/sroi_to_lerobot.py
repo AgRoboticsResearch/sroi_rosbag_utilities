@@ -22,10 +22,10 @@ from typing import Dict, Any
 # Ensure we're using the right paths
 current_dir = os.getcwd()
 if 'lerobot' not in current_dir:
-    os.chdir('/home/zfei/codes/lerobot')
+    os.chdir('/home/hls/codes/lerobot')
 
 # Add lerobot to path
-sys.path.insert(0, '/home/zfei/codes/lerobot/src')
+sys.path.insert(0, '/home/hls/codes/lerobot/src')
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -156,6 +156,90 @@ def load_image(image_path: str) -> np.ndarray:
     return image
 
 
+def process_single_episode(
+    dataset,
+    episode_path: Path,
+    single_task: str
+) -> int:
+    """
+    Process a single episode from a segment folder.
+
+    Args:
+        dataset: LeRobotDataset instance
+        episode_path: Path to episode folder
+        single_task: Task description
+
+    Returns:
+        Number of frames processed
+    """
+    # Load trajectory data
+    traj_path = episode_path / "CameraTrajectoryTransformed.txt"
+    timestamps, poses, positions, orientations = load_trajectory_data(str(traj_path))
+
+    # Load gripper data
+    gripper_path = episode_path / "gripper_distances.txt"
+    gripper_distances = load_gripper_data(str(gripper_path))
+
+    # Ensure all data has the same length
+    min_length = min(len(timestamps), len(gripper_distances))
+    timestamps = timestamps[:min_length]
+    positions = positions[:min_length]
+    orientations = orientations[:min_length]
+    gripper_distances = gripper_distances[:min_length]
+
+    # Check for image files
+    image_files = sorted(list(episode_path.glob("color_*.png")))
+    if len(image_files) < min_length:
+        print(f"Warning: Only {len(image_files)} images found, but {min_length} frames needed")
+        min_length = min(min_length, len(image_files))
+
+    if min_length == 0:
+        print(f"Skipping {episode_path.name}: no valid frames")
+        return 0
+
+    # Compute deltas for actions
+    delta_positions, delta_orientations = compute_deltas(positions, orientations)
+
+    # For the first frame, use zero deltas
+    delta_positions = np.vstack([np.zeros(3), delta_positions])
+    delta_orientations = np.vstack([np.zeros(3), delta_orientations])
+
+    # Add frames to dataset
+    for i in range(min_length):
+        # Load image
+        image = load_image(str(image_files[i]))
+
+        # Prepare action
+        action = np.array([
+            delta_positions[i, 0],  # delta_x_ee
+            delta_positions[i, 1],  # delta_y_ee
+            delta_positions[i, 2],  # delta_z_ee
+            delta_orientations[i, 0],  # delta_roll_ee
+            delta_orientations[i, 1],  # delta_pitch_ee
+            delta_orientations[i, 2],  # delta_yaw_ee
+        ], dtype=np.float32)
+
+        # Build frame
+        frame = {
+            "observation.images.camera": image,
+            "observation.state": np.array([
+                positions[i, 0],  # x
+                positions[i, 1],  # y
+                positions[i, 2],  # z
+                orientations[i, 0],  # roll
+                orientations[i, 1],  # pitch
+                orientations[i, 2],  # yaw
+                gripper_distances[i],  # gripper_distance
+            ], dtype=np.float32),
+            "action": action,
+            "task": single_task,
+        }
+
+        dataset.add_frame(frame)
+
+    return min_length
+
+
 def create_lerobot_dataset(
     data_path: str,
     repo_id: str,
@@ -166,9 +250,9 @@ def create_lerobot_dataset(
 ):
     """
     Convert SROI data to LeRobot dataset format.
-    
+
     Args:
-        data_path: Path to SROI data directory
+        data_path: Path to SROI data directory (can contain multiple segment subdirectories)
         repo_id: Repository ID for the dataset
         fps: Frames per second
         root: Root directory for dataset storage
@@ -176,45 +260,34 @@ def create_lerobot_dataset(
         single_task: Task description
     """
     data_path = Path(data_path)
-    
-    # Load trajectory data
-    traj_path = data_path / "CameraTrajectoryTransformed.txt"
-    timestamps, poses, positions, orientations = load_trajectory_data(str(traj_path))
-    
-    # Load gripper data
-    gripper_path = data_path / "gripper_distances.txt"
-    gripper_distances = load_gripper_data(str(gripper_path))
-    
-    # Ensure all data has the same length
-    min_length = min(len(timestamps), len(gripper_distances))
-    timestamps = timestamps[:min_length]
-    positions = positions[:min_length]
-    orientations = orientations[:min_length]
-    gripper_distances = gripper_distances[:min_length]
-    
-    print(f"Dataset length: {min_length} frames")
-    
-    # Compute deltas for actions
-    delta_positions, delta_orientations = compute_deltas(positions, orientations)
-    
-    # For the first frame, use zero deltas
-    delta_positions = np.vstack([np.zeros(3), delta_positions])
-    delta_orientations = np.vstack([np.zeros(3), delta_orientations])
-    
-    # Check for image files
-    image_files = sorted(list(data_path.glob("color_*.png")))
-    if len(image_files) < min_length:
-        print(f"Warning: Only {len(image_files)} images found, but {min_length} frames needed")
-        min_length = min(min_length, len(image_files))
-    
-    # Load a sample image to get dimensions
-    sample_image = load_image(str(image_files[0]))
+
+    # Find all episode folders (segment subdirectories)
+    episode_dirs = []
+    if (data_path / "CameraTrajectoryTransformed.txt").exists():
+        # Single episode in the data_path itself
+        episode_dirs = [data_path]
+    else:
+        # Multiple episodes in subdirectories
+        for item in sorted(data_path.iterdir()):
+            if item.is_dir() and (item / "CameraTrajectoryTransformed.txt").exists():
+                episode_dirs.append(item)
+
+    if not episode_dirs:
+        raise ValueError(f"No valid episode folders found in {data_path}")
+
+    print(f"Found {len(episode_dirs)} episode(s) to process")
+
+    # Load a sample image from first episode to get dimensions
+    sample_image_files = sorted(list(episode_dirs[0].glob("color_*.png")))
+    if not sample_image_files:
+        raise ValueError(f"No color images found in {episode_dirs[0]}")
+    sample_image = load_image(str(sample_image_files[0]))
     image_shape = sample_image.shape
-    
+
     # Define action names
-    action_names = ["delta_x_ee", "delta_y_ee", "delta_z_ee", 
+    action_names = ["delta_x_ee", "delta_y_ee", "delta_z_ee",
                    "delta_roll_ee", "delta_pitch_ee", "delta_yaw_ee"]
-    
+
     # Define dataset features
     features = {
         "observation.images.camera": {
@@ -233,7 +306,7 @@ def create_lerobot_dataset(
             "names": action_names,
         },
     }
-    
+
     # Create dataset
     dataset = LeRobotDataset.create(
         repo_id=repo_id,
@@ -245,65 +318,29 @@ def create_lerobot_dataset(
         image_writer_threads=4,
         image_writer_processes=0,
     )
-    
-    print("Adding frames to dataset...")
-    
-    # Add frames to dataset
-    for i in range(min_length):
-        # Load image
-        image = load_image(str(image_files[i]))
-        
-        # Prepare observation
-        observation = {
-            "images": {
-                "camera": image
-            },
-            "state": np.array([
-                positions[i, 0],  # x
-                positions[i, 1],  # y  
-                positions[i, 2],  # z
-                orientations[i, 0],  # roll
-                orientations[i, 1],  # pitch
-                orientations[i, 2],  # yaw
-                gripper_distances[i],  # gripper_distance
-            ], dtype=np.float32)
-        }
-        
-        # Prepare action
-        action = np.array([
-            delta_positions[i, 0],  # delta_x_ee
-            delta_positions[i, 1],  # delta_y_ee
-            delta_positions[i, 2],  # delta_z_ee
-            delta_orientations[i, 0],  # delta_roll_ee
-            delta_orientations[i, 1],  # delta_pitch_ee
-            delta_orientations[i, 2],  # delta_yaw_ee
-        ], dtype=np.float32)
-        
-        # Build frame
-        frame = {
-            "observation.images.camera": image,
-            "observation.state": observation["state"],
-            "action": action,
-        }
-        
-        dataset.add_frame(frame, task=single_task)
-        
-        if (i + 1) % 10 == 0:
-            print(f"Processed {i + 1}/{min_length} frames")
-    
-    # Save episode
-    dataset.save_episode()
-    
-    print(f"Dataset created with {min_length} frames")
+
+    # Process each episode
+    total_frames = 0
+    for ep_idx, episode_path in enumerate(episode_dirs):
+        print(f"\nProcessing episode {ep_idx + 1}/{len(episode_dirs)}: {episode_path.name}")
+        frames_added = process_single_episode(dataset, episode_path, single_task)
+
+        if frames_added > 0:
+            dataset.save_episode()
+            total_frames += frames_added
+            print(f"  Added {frames_added} frames")
+
+    print(f"\n{'='*50}")
+    print(f"Dataset created with {total_frames} total frames")
     print(f"Dataset episodes: {dataset.num_episodes}")
     print(f"Dataset features: {list(dataset.features.keys())}")
-    
+
     # Push to hub if requested
     if push_to_hub:
         print("Pushing dataset to Hugging Face Hub...")
         dataset.push_to_hub()
         print("Dataset pushed successfully!")
-    
+
     return dataset
 
 
