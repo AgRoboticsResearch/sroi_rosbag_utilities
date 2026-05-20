@@ -1,3 +1,6 @@
+piper_sroi_convert/pyproject.toml
+piper_sroi_convert/uv.lock
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
