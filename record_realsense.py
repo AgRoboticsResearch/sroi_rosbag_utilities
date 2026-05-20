@@ -3,20 +3,59 @@
 RealSense Stereo IR + Color Recorder
 
 Records synchronized stereo infrared and color frames from a RealSense camera
-using pyrealsense2. Produces output directories directly compatible with the
+(D435i or D405) using pyrealsense2. Output is directly compatible with the
 ORB-SLAM pipeline (orbslam_batch.sh, transform_trajectory.py, sroi_to_lerobot.py).
 
-Controls (in the OpenCV window):
+Controls (in GUI or headless terminal):
     r - Start recording a new episode
     s - Stop recording current episode
     q - Quit
 
-Usage:
-    python record_realsense.py --output /path/to/output --camera realsense_d435i
+Storage modes (--image-format + --encode-video):
+    PNG:   Save lossless PNGs (~169 MB per 300 frames at 640x480).
+    JPEG:  Save JPEGs at quality 90 (~30 MB per 300 frames).
+    MP4:   Encode to MP4 (H.264 by default) after each episode, then delete
+           source images (~5 MB per 300 frames). Requires: pip install av
+
+Folder naming:
+    Sessions:   {timestamp}-{format}   e.g. 20260520_143052-png
+    Episodes:   episode_NNN-{format}   e.g. episode_001-mp4
+    Where {format} is "png", "jpeg", or "mp4".
+
+Each episode contains:
+    left_NNNNNN.{ext}     Left IR frames
+    right_NNNNNN.{ext}    Right IR frames
+    color_NNNNNN.{ext}    Color frames
+    times.txt             Hardware timestamps (one per line, seconds)
+    timestamps.json       Timestamps + metadata (from/to, fps, frame_count)
+    camera_info_*.json    Camera intrinsics (ROS camera_info format)
+
+Usage examples:
+    # Default: PNG with GUI preview
     python record_realsense.py -o /path/to/output --camera realsense_d405
+
+    # JPEG mode (smaller files)
+    python record_realsense.py -o /path/to/output --image-format jpeg
+
+    # Headless SSH session (no display needed)
+    python record_realsense.py -o /path/to/output --headless
+
+    # Encode to MP4 (smallest, requires: pip install av)
+    python record_realsense.py -o /path/to/output --encode-video
+
+    # MP4 with AV1 codec (better compression, needs libsvtav1)
+    python record_realsense.py -o /path/to/output --encode-video --vcodec libsvtav1
+
+    # Decode MP4s back to JPEGs for downstream pipelines
+    python decode_videos.py /path/to/session-mp4 --recursive
+
+Dependencies:
+    pip install pyrealsense2 opencv-python numpy
+    pip install av  # only needed for --encode-video
 """
 
 import argparse
+import glob
 import json
 import select
 import shutil
@@ -35,6 +74,11 @@ try:
 except ImportError:
     print("pyrealsense2 is required: pip install pyrealsense2")
     raise SystemExit(1)
+
+try:
+    import av
+except ImportError:
+    av = None
 
 
 # ---------------------------------------------------------------------------
@@ -120,20 +164,100 @@ def make_camera_info(intrinsics, width, height, baseline_tx=0.0):
 
 
 # ---------------------------------------------------------------------------
+# Video encoding (learned from LeRobot's encode_video_frames)
+# ---------------------------------------------------------------------------
+def encode_episode_to_video(episode_dir, fps, vcodec="libx264", crf=23, g=2,
+                            image_format="png"):
+    """Encode per-camera image sequences in an episode directory to MP4 files.
+
+    Produces left.mp4, right.mp4, color.mp4 alongside timestamps.json.
+    Deletes the original images after successful encoding.
+    """
+    if av is None:
+        print("PyAV is required for video encoding: pip install av")
+        return False
+
+    ext = ".jpg" if image_format == "jpeg" else ".png"
+    streams = ["left", "right", "color"]
+
+    for stream_name in streams:
+        pattern = f"{stream_name}_*{ext}"
+        input_list = sorted(glob.glob(str(episode_dir / pattern)))
+        if not input_list:
+            print(f"  No {stream_name} frames found, skipping.")
+            continue
+
+        # Read first frame to get dimensions
+        first = cv2.imread(input_list[0])
+        height, width = first.shape[:2]
+
+        video_path = episode_dir / f"{stream_name}.mp4"
+        video_options = {
+            "crf": str(crf),
+            "g": str(g),
+        }
+
+        print(f"  Encoding {stream_name}: {len(input_list)} frames "
+              f"{width}x{height} -> {video_path.name} ({vcodec}, crf={crf})")
+
+        with av.open(str(video_path), "w") as output:
+            out_stream = output.add_stream(vcodec, fps, options=video_options)
+            out_stream.pix_fmt = "yuv420p"
+            out_stream.width = width
+            out_stream.height = height
+
+            for img_path in input_list:
+                img = cv2.imread(img_path)
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                frame = av.VideoFrame.from_ndarray(img_rgb, format="rgb24")
+                packet = out_stream.encode(frame)
+                if packet:
+                    output.mux(packet)
+
+            # Flush encoder
+            packet = out_stream.encode()
+            if packet:
+                output.mux(packet)
+
+        # Delete PNGs after successful encoding
+        for img_path in input_list:
+            Path(img_path).unlink()
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Recording session
 # ---------------------------------------------------------------------------
 class RecordingSession:
     """Manages episode recording state and file I/O."""
 
-    def __init__(self, output_dir: Path, camera_type: str = "realsense_d435i"):
+    def __init__(self, output_dir: Path, camera_type: str = "realsense_d435i",
+                 encode_video: bool = False, vcodec: str = "libx264",
+                 image_format: str = "png", fps: int = 30):
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.camera_type = camera_type
+        self.encode_video = encode_video
+        self.vcodec = vcodec
+        self.image_format = image_format
+        self.fps = fps
         self.episode_count = 0
         self.is_recording = False
         self.frame_counter = 0
         self.episode_dir = None
         self.times_file = None
+        self.timestamps = []
+
+    @property
+    def ext(self):
+        return ".jpg" if self.image_format == "jpeg" else ".png"
+
+    @property
+    def imwrite_params(self):
+        if self.image_format == "jpeg":
+            return [cv2.IMWRITE_JPEG_QUALITY, 90]
+        return []
 
     def start_episode(self, camera_info_left, camera_info_right, camera_info_color):
         """Start recording a new episode."""
@@ -143,7 +267,8 @@ class RecordingSession:
 
         self.episode_count += 1
         self.frame_counter = 0
-        self.episode_dir = self.output_dir / f"episode_{self.episode_count:03d}"
+        folder_format = "mp4" if self.encode_video else self.image_format
+        self.episode_dir = self.output_dir / f"episode_{self.episode_count:03d}-{folder_format}"
         self.episode_dir.mkdir(parents=True, exist_ok=True)
 
         # Save camera info JSONs
@@ -171,10 +296,13 @@ class RecordingSession:
             return
 
         idx = self.frame_counter
-        cv2.imwrite(str(self.episode_dir / f"left_{idx:06d}.png"), left_img)
-        cv2.imwrite(str(self.episode_dir / f"right_{idx:06d}.png"), right_img)
-        cv2.imwrite(str(self.episode_dir / f"color_{idx:06d}.png"), color_img)
+        ext = self.ext
+        params = self.imwrite_params
+        cv2.imwrite(str(self.episode_dir / f"left_{idx:06d}{ext}"), left_img, params)
+        cv2.imwrite(str(self.episode_dir / f"right_{idx:06d}{ext}"), right_img, params)
+        cv2.imwrite(str(self.episode_dir / f"color_{idx:06d}{ext}"), color_img, params)
         self.times_file.write(f"{timestamp:.6f}\n")
+        self.timestamps.append(timestamp)
         self.frame_counter += 1
 
     def stop_episode(self):
@@ -184,11 +312,33 @@ class RecordingSession:
             return
 
         self.times_file.close()
+
+        # Save timestamps as JSON (LeRobot-compatible)
+        ts_data = {
+            "timestamps": self.timestamps,
+            "from_timestamp": self.timestamps[0] if self.timestamps else None,
+            "to_timestamp": self.timestamps[-1] if self.timestamps else None,
+            "fps": self.fps,
+            "frame_count": self.frame_counter,
+        }
+        with open(self.episode_dir / "timestamps.json", "w") as f:
+            json.dump(ts_data, f, indent=2)
+
         self.is_recording = False
         print(
             f"Stopped episode {self.episode_count}: "
             f"{self.frame_counter} frames saved to {self.episode_dir}"
         )
+
+        # Encode PNGs to MP4 if requested
+        if self.encode_video:
+            print(f"Encoding episode {self.episode_count} to video...")
+            encode_episode_to_video(
+                self.episode_dir, self.fps, vcodec=self.vcodec,
+                image_format=self.image_format,
+            )
+
+        self.timestamps = []
 
 
 # ---------------------------------------------------------------------------
@@ -289,15 +439,54 @@ def main():
         choices=list(CAMERA_DEFAULTS.keys()),
         help="Camera type (default: realsense_d435i)",
     )
+    parser.add_argument(
+        "--image-format",
+        type=str,
+        default="png",
+        choices=["png", "jpeg"],
+        help="Image format for saved frames (default: png)",
+    )
+    parser.add_argument(
+        "--encode-video",
+        action="store_true",
+        default=False,
+        help="Encode images to MP4 after each episode and delete originals (requires: pip install av)",
+    )
+    parser.add_argument(
+        "--vcodec",
+        type=str,
+        default="libx264",
+        choices=["libx264", "libsvtav1", "hevc"],
+        help="Video codec for --encode-video (default: libx264)",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        default=False,
+        help="Run without display; use terminal for r/s/q controls",
+    )
     args = parser.parse_args()
-
-    # Create session directory with unix timestamp
-    session_timestamp = int(time.time())
-    session_dir = Path(args.output) / str(session_timestamp)
-    session = RecordingSession(session_dir, camera_type=args.camera)
 
     # Setup RealSense pipeline
     defaults = CAMERA_DEFAULTS[args.camera]
+
+    # Determine folder postfix
+    if args.encode_video:
+        folder_format = "mp4"
+    else:
+        folder_format = args.image_format
+
+    # Create session directory with readable timestamp + format postfix
+    session_timestamp = time.strftime("%Y%m%d_%H%M%S")
+    session_dir = Path(args.output) / f"{session_timestamp}-{folder_format}"
+    session = RecordingSession(
+        session_dir,
+        camera_type=args.camera,
+        encode_video=args.encode_video,
+        vcodec=args.vcodec,
+        image_format=args.image_format,
+        fps=defaults["color_fps"],
+    )
     pipeline = rs.pipeline()
     config = rs.config()
 
@@ -321,6 +510,15 @@ def main():
     print(f"IR:  {defaults['ir_width']}x{defaults['ir_height']} @ {defaults['ir_fps']}fps")
     print(f"Color: {defaults['color_width']}x{defaults['color_height']} @ {defaults['color_fps']}fps")
     print(f"Output: {session_dir}")
+    print(f"Image format: {args.image_format}")
+    if args.encode_video:
+        print(f"Video encoding: ON (codec={args.vcodec})")
+    else:
+        print("Video encoding: OFF")
+    if args.headless:
+        print("Mode: headless (terminal controls)")
+    else:
+        print("Mode: GUI (OpenCV window controls)")
 
     pipeline_profile = pipeline.start(config)
 
@@ -371,6 +569,13 @@ def main():
             pipeline.stop()
             return
 
+    # Set up headless terminal if needed
+    headless = args.headless
+    old_term = None
+    if headless and sys.stdin.isatty():
+        old_term = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+
     # Main loop
     fps_counter = 0
     fps_timer = time.time()
@@ -407,18 +612,27 @@ def main():
                 display_fps = fps_counter / elapsed
                 fps_counter = 0
                 fps_timer = time.time()
+                if headless and session.is_recording:
+                    print(f"\r  FPS: {display_fps:.0f}  Frame: {session.frame_counter}", end="", flush=True)
 
-            # Build and show preview
-            preview = build_preview(color_img, ir_left_img, ir_right_img, session, display_fps)
-            cv2.imshow("RealSense Recorder", preview)
+            # Display / key handling
+            if headless:
+                # Non-blocking terminal read
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    key = sys.stdin.read(1)
+                else:
+                    key = ""
+            else:
+                preview = build_preview(color_img, ir_left_img, ir_right_img, session, display_fps)
+                cv2.imshow("RealSense Recorder", preview)
+                k = cv2.waitKey(1) & 0xFF
+                key = chr(k) if k != 255 else ""
 
-            # Key handling
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("r"):
+            if key == "r":
                 session.start_episode(camera_info_left, camera_info_right, camera_info_color)
-            elif key == ord("s"):
+            elif key == "s":
                 session.stop_episode()
-            elif key == ord("q"):
+            elif key == "q":
                 if session.is_recording:
                     session.stop_episode()
                 break
@@ -429,6 +643,8 @@ def main():
             session.stop_episode()
     finally:
         pipeline.stop()
+        if old_term is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_term)
         try:
             cv2.destroyAllWindows()
         except cv2.error:
