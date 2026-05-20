@@ -83,7 +83,11 @@ python3 extract_stereo_rosbags.py /path/to/bag.bag /output/folder/ realsense_d43
 
 ### Step 3: Extract Gripper
 ```bash
+# Default: D405 config
 python gripper_estimation_april_tag.py /output/folder/
+
+# Explicitly select D435 config
+python gripper_estimation_april_tag.py /output/folder/ --configs configs/sroi_v1_d435.json
 ```
 
 ### Step 4: Extract Images
