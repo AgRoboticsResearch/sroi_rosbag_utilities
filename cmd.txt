@@ -1,0 +1,96 @@
+# =============================================================================
+# SROI Data Processing Pipeline
+# =============================================================================
+#
+# Unified pipeline script: run_pipeline.py
+# Run all steps automatically (except ORB-SLAM which needs Docker)
+#
+
+# Basic usage - Run full pipeline:
+python run_pipeline.py -i brl_lab_sroi_rosbags_20260206/ -o test_output/ --camera realsense_d435i --skip-existing
+
+# Run specific steps only:
+python run_pipeline.py -i brl_lab_sroi_rosbags_20260206/ -o test_output/ --steps segment,gripper
+
+# Dry run to preview commands:
+python run_pipeline.py -i input_bags/ -o output/ --dry-run
+
+# With LeRobot conversion:
+python run_pipeline.py -i brl_lab_sroi_rosbags_20260206/ -o test_output/ \
+    --lerobot-repo "sroi/lab_picking" \
+    --lerobot-task "pick the red strawberry" \
+    --lerobot-root "/home/hls/codes/lerobot_datasets/sroi_lab_picking"
+
+# =============================================================================
+# ORB-SLAM3 (Must run manually in Docker)
+# =============================================================================
+#
+# ORB-SLAM3 requires GUI and must be run inside Docker container:
+#
+#   1. Enter Docker:
+#      ./run_docker.sh
+#
+#   2. Run batch processing:
+#      cd /codes/sroi_rosbag_utilities/
+#      ./orbslam_batch.sh /codes/sroi_rosbag_utilities/test_output/ skip_exist false
+#
+# Arguments: <input_dir> [skip_existing] [visualization]
+#   skip_existing: "true" to skip folders with CameraTrajectory.txt
+#   visualization: "true" to enable GUI
+
+# =============================================================================
+# Individual Step Commands (for reference)
+# =============================================================================
+#
+# Step 1: Segment bags and extract images
+# python rosbag_segment_extract.py -i brl_lab_sroi_rosbags_20260206/ -o test_output/ realsense_d435i --compressed --skip-existing
+
+# Step 2: Batch estimate gripper distances from AprilTags
+# python gripper_estimation_batch.py -i test_output/ --skip-existing
+
+# Step 3: ORB-SLAM3 (see Docker section above)
+
+# Step 4: Transform trajectories to initial camera frame
+# python transform_trajectory.py test_output/ --recursive
+
+# Step 5: Batch visualize trajectories
+# python batch_visualize_trajectory.py test_output/ --scale uniform --skip
+
+# Step 6: Convert to LeRobot dataset
+# cd /home/hls/codes/lerobot
+# python /home/hls/codes/sroi_rosbag_utilities/lerobot/sroi_to_lerobot.py \
+#     --data_path "/home/hls/codes/sroi_rosbag_utilities/test_output/" \
+#     --repo_id "sroi/lab_picking" \
+#     --fps 30 \
+#     --root "/home/hls/codes/lerobot_datasets/sroi_lab_picking" \
+#     --task "pick the red strawberry"
+
+# =============================================================================
+# LeRobot Dataset Merging
+# =============================================================================
+#
+# Merge multiple LeRobot datasets into a single dataset
+
+# Basic usage - merge two datasets:
+python lerobot/merge_datasets.py \
+    --datasets sroi_lab_picking_260316 sroi_lab_picking_260317 \
+    --output sroi_lab_picking_merged
+
+# With explicit root directory:
+python lerobot/merge_datasets.py \
+    --datasets ds1 ds2 ds3 \
+    --output merged_dataset \
+    --root /home/hls/codes/sroi_rosbag_utilities/sroi_lerobot_datasets
+
+# With custom output directory:
+python lerobot/merge_datasets.py \
+    --datasets ds1 ds2 \
+    --output merged \
+    --root /path/to/datasets \
+    --output-dir /path/to/output
+
+# Verbose mode:
+python lerobot/merge_datasets.py \
+    --datasets ds1 ds2 \
+    --output merged \
+    -v

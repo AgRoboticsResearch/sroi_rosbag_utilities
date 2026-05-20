@@ -182,9 +182,9 @@ def create_orb_slam_yaml(camera_info: Dict[str, Any], template_path: str, output
 def main():
     parser = argparse.ArgumentParser(description="Create ORB-SLAM YAML from extracted camera info")
     parser.add_argument("output_folder", help="Output folder from extract_stereo_rosbags.py")
-    parser.add_argument("camera_type", choices=["realsense_d435i"], 
-                       help="Camera type (currently only realsense_d435i is supported)")
-    parser.add_argument("--template_dir", default="/home/zfei/codes/sroi/sroi_rosbag_utilities/orb_slam_yaml",
+    parser.add_argument("camera_type", choices=["realsense_d435i", "realsense_d405"],
+                       help="Camera type")
+    parser.add_argument("--template_dir", default=os.path.join(os.path.dirname(__file__), "orb_slam_yaml"),
                        help="Directory containing template YAML files")
     
     args = parser.parse_args()
@@ -194,9 +194,12 @@ def main():
         raise FileNotFoundError(f"Output folder not found: {args.output_folder}")
     
     # Determine template file based on camera type
-    if args.camera_type == "realsense_d435i":
-        template_file = "RealSense_D435i.yaml"
-    else:
+    TEMPLATE_MAP = {
+        "realsense_d435i": "RealSense_D435i.yaml",
+        "realsense_d405": "RealSense_D405.yaml",
+    }
+    template_file = TEMPLATE_MAP.get(args.camera_type)
+    if template_file is None:
         raise ValueError(f"Unsupported camera type: {args.camera_type}")
     
     template_path = os.path.join(args.template_dir, template_file)

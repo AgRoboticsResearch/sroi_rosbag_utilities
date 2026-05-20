@@ -133,21 +133,21 @@ def visualize_single_trajectory(traj, segment_name, stats, output_path, uniform_
         ax1.set_ylim(center_z - max_span/2, center_z + max_span/2)
         ax1.set_zlim(center_y - max_span/2, center_y + max_span/2)
 
-    # 2D top-down view (X-Z plane)
+    # 2D top-down view (X-Y plane)
     ax2 = fig.add_subplot(122)
-    ax2.plot(x, z, 'b-', linewidth=1.5)
-    ax2.scatter(x[0], z[0], c='green', s=100, marker='o', label='Start', zorder=5)
-    ax2.scatter(x[-1], z[-1], c='red', s=100, marker='x', label='End', zorder=5)
+    ax2.plot(x, y, 'b-', linewidth=1.5)
+    ax2.scatter(x[0], y[0], c='green', s=100, marker='o', label='Start', zorder=5)
+    ax2.scatter(x[-1], y[-1], c='red', s=100, marker='x', label='End', zorder=5)
     ax2.set_xlabel('X (m)')
-    ax2.set_ylabel('Z (m)')
-    ax2.set_title('Top-Down View (X-Z)')
+    ax2.set_ylabel('Y (m)')
+    ax2.set_title('Top-Down View (X-Y)')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
     # Apply uniform scale for 2D plot
     if uniform_scale:
         ax2.set_xlim(center_x - max_span/2, center_x + max_span/2)
-        ax2.set_ylim(center_z - max_span/2, center_z + max_span/2)
+        ax2.set_ylim(center_y - max_span/2, center_y + max_span/2)
         ax2.set_aspect('equal')
     else:
         ax2.axis('equal')
@@ -247,11 +247,11 @@ def create_combined_grid(trajectory_data, output_path, max_cols=5):
     for idx, (traj, segment_name, stats) in enumerate(trajectory_data):
         ax = axes[idx]
         x = traj[:, 0, 3]
-        z = traj[:, 2, 3]
+        y = traj[:, 1, 3]
 
-        ax.plot(x, z, 'b-', linewidth=1)
-        ax.scatter(x[0], z[0], c='green', s=30, marker='o', zorder=5)
-        ax.scatter(x[-1], z[-1], c='red', s=30, marker='x', zorder=5)
+        ax.plot(x, y, 'b-', linewidth=1)
+        ax.scatter(x[0], y[0], c='green', s=30, marker='o', zorder=5)
+        ax.scatter(x[-1], y[-1], c='red', s=30, marker='x', zorder=5)
 
         # Use short name format
         short_name = extract_short_name(segment_name)

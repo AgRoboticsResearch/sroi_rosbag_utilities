@@ -4,114 +4,116 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-This repository contains utilities for processing ROS bag files from robotic manipulation experiments (SROI - Stereo RGB-based manipulation). The pipeline extracts robot trajectories, camera images, and gripper states from ROS bags and converts them to formats suitable for training robot learning policies (e.g., LeRobot datasets).
+Utilities for processing ROS bag files from robotic manipulation experiments (SROI - Stereo RGB-based manipulation). The pipeline extracts robot trajectories, camera images, and gripper states from ROS bags and converts them to LeRobot datasets for training robot learning policies.
 
-### Data Pipeline Architecture
+## Python Environment
 
-The repository implements a multi-stage processing pipeline:
+Always activate the conda environment `sroi_rosbags` before running any Python scripts:
 
-1. **Segmentation** (`rosbag_segment.py`) - Extracts action segments from ROS bags based on `/upi/status/is_action` topic
-2. **Image Extraction** (`extract_stereo_rosbags.py`) - Extracts stereo/RGB images and camera info from segmented bags
-3. **Gripper Estimation** (`gripper_estimation_april_tag.py`) - Detects AprilTags to estimate gripper state
-4. **Trajectory Processing** (`transform_trajectory.py`) - Transforms ORB-SLAM camera trajectories to be relative to initial frame
-5. **Dataset Conversion** (`lerobot/sroi_to_lerobot.py`) - Converts processed data to LeRobot dataset format
-
-## Common Development Commands
-
-### Installing Dependencies
 ```bash
-pip install -r requirements.txt
+conda activate sroi_rosbags
+pip install -r requirements.txt  # first-time setup
 ```
 
-Key dependencies: `rosbags`, `opencv-python`, `numpy`, `PyYAML`, `pupil_apriltags`
+## Data Pipeline
 
-### Running the Full Pipeline
+The pipeline processes ROS bags through 6 stages. You can either run the unified pipeline or individual scripts.
 
-Process a single ROS bag from start to finish:
+### Unified Pipeline (`run_pipeline.py`)
 
 ```bash
-# Step 1: Segment the bag (extract action periods)
-python rosbag_segment.py input.bag -o /path/to/output
+# Full pipeline (ORB-SLAM step must be run manually, see below)
+python run_pipeline.py -i input_bags/ -o output/ --camera realsense_d435i --dry-run
 
-# Step 2: Extract stereo/RGB images
-python3 extract_stereo_rosbags.py /path/to/segment.bag /output/folder/ realsense_d435i --compressed
+# Specific steps only
+python run_pipeline.py -i input_bags/ -o output/ --steps segment,gripper,transform
 
-# Step 3: Estimate gripper distances from AprilTags
-python gripper_estimation_april_tag.py /output/folder/
+# With LeRobot conversion
+python run_pipeline.py -i bags/ -o output/ --lerobot-repo user/dataset --lerobot-task "pick object"
+```
 
-# Step 4: Generate ORB-SLAM YAML config
-python3 create_orb_slam_yaml.py /output/folder/ realsense_d435i
+Available steps: `segment`, `gripper`, `orbslam`, `transform`, `visualize`, `lerobot`
 
-# Step 5: Transform trajectory (after running ORB-SLAM)
-python transform_trajectory.py /output/folder/
+### Individual Pipeline Scripts
 
-# Step 6: Convert to LeRobot dataset (run from lerobot directory)
+Each stage has both a single-file script and a batch processing variant:
+
+1. **Segment + Extract** - `rosbag_segment_extract.py` (combined) or separate `rosbag_segment.py` + `extract_stereo_rosbags.py`
+2. **Gripper Estimation** - `gripper_estimation_april_tag.py` (single) or `gripper_estimation_batch.py` (batch)
+3. **ORB-SLAM** - Run manually inside Docker (see below)
+4. **Trajectory Transform** - `transform_trajectory.py` (supports `--recursive` for batch)
+5. **Visualization** - `batch_visualize_trajectory.py`
+6. **LeRobot Conversion** - `lerobot/sroi_to_lerobot.py`
+
+### ORB-SLAM (Docker Workflow)
+
+ORB-SLAM3 runs inside a Docker container with GPU access. It cannot be automated by `run_pipeline.py`:
+
+```bash
+# 1. Enter Docker container
+cd ORB_SLAM3 && ./run_docker.sh
+
+# 2. Inside Docker, run batch processing:
+./orbslam_batch.sh /codes/sroi_rosbag_utilities/output/ true false
+#                      ^input_dir              ^skip_existing ^visualization
+```
+
+The batch script looks for `*_segment_*/` folders containing `left_*.png` and `right_*.png` images, and produces `CameraTrajectory.txt` in each.
+
+## LeRobot Conversion
+
+**Important**: `lerobot/sroi_to_lerobot.py` must be run from the LeRobot source directory because it imports `lerobot` as a package. The script hardcodes a sys.path to `/home/zfei/code/lerobot/src` — adjust this for your setup.
+
+```bash
 cd /path/to/lerobot
 python /path/to/sroi_rosbag_utilities/lerobot/sroi_to_lerobot.py \
     --data_path "/output/folder/" \
     --repo_id "username/dataset_name" \
-    --fps 30
+    --fps 30 \
+    --episodes all
 ```
 
-## Key Scripts and Their Roles
+### Multi-episode support
 
-### Core Processing Scripts
+- Pass a **parent directory** containing multiple episode subdirectories and use `--episodes all` (default) or `--episodes ep1,ep2`
+- Pass a **single episode directory** for backward compatibility (auto-detected by presence of `CameraTrajectoryTransformed.txt`)
 
-- **`rosbag_segment.py`** - Segments ROS bags where `/upi/status/is_action` is true. Supports single files or directories with glob patterns.
-- **`extract_stereo_rosbags.py`** - Extracts synchronized stereo/RGB images using the modern `rosbags` library. Supports multiple camera types (`realsense_d435i`, `oak`). Handles both compressed and raw image topics.
-- **`gripper_estimation_april_tag.py`** - Detects AprilTags in images to estimate gripper opening distance. Uses `pupil_apriltags` library.
-- **`transform_trajectory.py`** - Transforms ORB-SLAM camera trajectories from world coordinates to be relative to the initial camera frame.
-- **`create_orb_slam_yaml.py`** - Generates ORB-SLAM configuration YAML files from camera info JSONs.
+### Dataset output format
 
-### LeRobot Integration
+- **State** (7D): `[x, y, z, wx, wy, wz, gripper_pos]` — position + rotation vector + gripper
+- **Action** (7D): next frame's state (absolute, not delta)
+- **Images**: `color_*.png` stored as video in LeRobot format
 
-- **`lerobot/sroi_to_lerobot.py`** - Main converter from SROI format to LeRobot datasets. Handles trajectory data (4x4 transforms), gripper states, and camera images.
+### Merging datasets
 
-**Important**: This script must be run from the LeRobot directory due to import dependencies. It changes the working directory internally and requires LeRobot to be in the Python path.
+`lerobot/merge_datasets.py` merges multiple LeRobot datasets (checks FPS, robot_type, and feature compatibility):
 
-### extract_rgbd/ Directory
-
-Contains additional extraction utilities:
-- **`extract_rgbd/extract_stereo_rosbags.py`** - Alternative stereo extraction (older version using `rosbag` library)
-- **`extract_rgbd/extract_rgbd.py`** - RGB-D extraction utilities
-- **`extract_rgbd/msgReaders.py`** - ROS message reader utilities
+```bash
+python lerobot/merge_datasets.py --datasets ds1 ds2 --output merged --root /path/to/datasets
+```
 
 ## Camera Topic Mappings
 
-The scripts support different camera types with specific topic conventions:
+| Camera Type | Left | Right | Color | Depth |
+|---|---|---|---|---|
+| `realsense_d435i` | `/camera/infra1/image_rect_raw` | `/camera/infra2/image_rect_raw` | `/camera/color/image_raw` | `/camera/aligned_depth_to_color/image_raw` |
+| `oak` | `/oak/left/image_rect_color` | `/oak/right/image_rect_color` | — | `/oak/stereo/image_raw` |
 
-### RealSense D435i
-- Left infrared: `/camera/infra1/image_rect_raw`
-- Right infrared: `/camera/infra2/image_rect_raw`
-- Color: `/camera/color/image_raw`
-- Depth: `/camera/aligned_depth_to_color/image_raw`
+Use `--compressed` flag when extracting images from bags that have compressed image topics.
 
-### OAK
-- Left: `/oak/left/image_rect_color`
-- Right: `/oak/right/image_rect_color`
-- Stereo depth: `/oak/stereo/image_raw`
+## Coordinate System
 
-## Coordinate System Notes
-
-- Trajectory data is stored as 3x4 transformation matrices (first 3 rows of 4x4 homogeneous transforms)
-- The fourth row `[0, 0, 0, 1]` is appended to create full 4x4 matrices
-- ORB-SLAM trajectories are in world coordinates; `transform_trajectory.py` converts to camera-relative coordinates
-- Euler angles use ZYX convention (yaw, pitch, roll) for LeRobot compatibility
-
-## ORB_SLAM3 Subdirectory
-
-The repository includes a complete ORB_SLAM3 build in `ORB_SLAM3/`. This is a third-party visual SLAM system used for camera trajectory estimation. Treat this as a dependency - modifications should generally be avoided unless specifically working on SLAM functionality.
+- Trajectory data stored as 3x4 transformation matrices (first 3 rows of 4x4 homogeneous transforms); the fourth row `[0, 0, 0, 1]` is appended during processing
+- ORB-SLAM outputs world-coordinate trajectories; `transform_trajectory.py` converts to camera-relative coordinates
+- Rotation representations: rotation vectors (axis-angle `wx, wy, wz`) in the LeRobot converter, used via `lerobot.utils.rotation.Rotation`
 
 ## Data Format Requirements
 
-For LeRobot conversion, input directories must contain:
-- `CameraTrajectoryTransformed.txt` - Trajectory with timestamps (format: `timestamp r00 r01... r23`)
-- `gripper_distances.txt` - One gripper distance value per line
-- `color_XXXXXX.png` - Camera images with zero-padded indices
+For LeRobot conversion, each episode directory must contain:
+- `CameraTrajectoryTransformed.txt` — timestamp + 12 floats per line (3x4 matrix)
+- `gripper_distances.txt` — one float per line
+- `color_XXXXXX.png` — zero-padded indexed color images
 
-## Working with LeRobot
+## ORB_SLAM3 Subdirectory
 
-When running LeRobot-related scripts:
-- The script may change directories to `/home/hls/codes/lerobot` (hardcoded path)
-- Ensure LeRobot is installed and accessible in Python path
-- Check `lerobot/example_convert.py` for usage patterns
+Complete ORB_SLAM3 build included as a dependency. Do not modify unless specifically working on SLAM functionality.

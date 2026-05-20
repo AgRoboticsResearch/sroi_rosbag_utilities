@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Batch Gripper Estimation using AprilTags.
+Batch Gripper Estimation using AprilTags (RealSense D405 defaults).
 
-Processes multiple data folders to estimate gripper distances from AprilTag detections.
-Based on gripper_estimation_april_tag.py but with batch processing capability.
+D405-specific version with tuned parameters:
+  gripper_roi=200, nominal_diag=42, threshold=15
 
 Usage:
-    python gripper_estimation_batch.py -i test_output/
-    python gripper_estimation_batch.py -i test_output/ --skip-existing
+    python gripper_estimation_batch_d405.py -i test_output/
+    python gripper_estimation_batch_d405.py -i test_output/ --skip-existing
 """
 
 import argparse
@@ -220,21 +220,15 @@ def process_folder(data_folder: Path, at_detector, args) -> dict:
     return result
 
 
-def find_data_folders(input_dir: Path, recursive: bool = False) -> list:
+def find_data_folders(input_dir: Path) -> list:
     """Find all folders that contain color images."""
     data_folders = []
-    if recursive:
-        for dirpath, _, filenames in os.walk(input_dir):
-            if "segment_bags" in dirpath:
-                continue
-            if any(f.startswith("color_") and f.endswith(".png") for f in filenames):
-                data_folders.append(Path(dirpath))
-    else:
-        for item in sorted(input_dir.iterdir()):
-            if item.is_dir() and item.name != "segment_bags":
-                color_images = list(item.glob("color_*.png"))
-                if color_images:
-                    data_folders.append(item)
+    for item in sorted(input_dir.iterdir()):
+        if item.is_dir() and item.name != "segment_bags":
+            # Check if folder has color images
+            color_images = list(item.glob("color_*.png"))
+            if color_images:
+                data_folders.append(item)
     return data_folders
 
 
@@ -256,14 +250,13 @@ Examples:
     )
     parser.add_argument("-i", "--input", required=True, help="Input directory containing data folders")
     parser.add_argument("--skip-existing", action="store_true", help="Skip folders that already have gripper_distances.txt")
-    parser.add_argument("--gripper-roi", type=int, default=390, help="ROI for gripper detection (default: 390)")
+    parser.add_argument("--gripper-roi", type=int, default=200, help="ROI for gripper detection (default: 200)")
     parser.add_argument("--left-tag-id", type=int, default=0, help="AprilTag ID for left gripper (default: 0)")
     parser.add_argument("--right-tag-id", type=int, default=15, help="AprilTag ID for right gripper (default: 15)")
-    parser.add_argument("--nominal-diag", type=int, default=75, help="Nominal diagonal distance for tag validation (default: 75)")
-    parser.add_argument("--threshold", type=int, default=20, help="Threshold for tag validation (default: 20)")
+    parser.add_argument("--nominal-diag", type=int, default=42, help="Nominal diagonal distance for tag validation (default: 42)")
+    parser.add_argument("--threshold", type=int, default=15, help="Threshold for tag validation (default: 15)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed detection info")
     parser.add_argument("--log", help="Path to save processing log as JSON")
-    parser.add_argument("--recursive", action="store_true", help="Recursively search for episode folders")
 
     args = parser.parse_args()
 
@@ -273,7 +266,7 @@ Examples:
         sys.exit(1)
 
     # Find data folders
-    data_folders = find_data_folders(input_dir, recursive=args.recursive)
+    data_folders = find_data_folders(input_dir)
     if not data_folders:
         print(f"No data folders with color images found in {input_dir}")
         sys.exit(1)
