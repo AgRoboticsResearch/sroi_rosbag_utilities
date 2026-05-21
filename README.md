@@ -1,96 +1,132 @@
-# ROS Bag Segmenter
+# SROI ROS Bag Utilities
 
-A Python utility for segmenting ROS bag files based on action status messages. This tool extracts segments from ROS bag files where the `/upi/status/is_action` topic is `true`.
+Tools for recording, processing, and converting SROI robot data for ORB-SLAM and LeRobot training pipelines.
 
+---
 
-## Usage
+## Pipeline A: Record → LeRobot (Direct Recording)
 
-The script can process either a single ROS bag file or a directory containing multiple bag files.
+Record directly from a RealSense camera and convert to a LeRobot training dataset.
 
-### Basic Usage
+### Step 1: Record
 
-Process a single bag file:
 ```bash
-python rosbag_segment.py input.bag
+# PNG mode (default, lossless)
+python record_realsense.py -o ~/Desktop/435 --camera realsense_d405
+
+# JPEG mode (smaller files)
+python record_realsense.py -o ~/Desktop/435 --camera realsense_d405 --image-format jpeg
+
+# MP4 mode (smallest, auto-encodes after each episode)
+python record_realsense.py -o ~/Desktop/435 --camera realsense_d405 --encode-video
+
+# Headless SSH session (no display needed)
+python record_realsense.py -o ~/Desktop/435 --headless
+
+# Combine: headless + MP4
+python record_realsense.py -o ~/Desktop/435 --headless --encode-video --camera realsense_d405
 ```
 
-Process all bag files in a directory:
+Controls (GUI window or terminal in headless): `r` record, `s` stop, `q` quit
+
+Session folders are named `{timestamp}-{format}` (e.g. `20260520_143052-mp4`).
+
+### Step 2: Decode MP4 (only if recorded with --encode-video)
+
 ```bash
-python rosbag_segment.py /path/to/directory
+python decode_videos.py ~/Desktop/435/20260520_143052-mp4 --recursive
 ```
 
-### Advanced Options
+Produces a sibling folder with `-png` postfix containing PNG images for ORB-SLAM.
 
-- `-o, --output`: Specify output directory for segmented files
-- `-t, --template`: Custom filename template for output files
-- `-p, --pattern`: Pattern to match bag files (default: *.bag)
+### Step 3: Run ORB-SLAM3
 
-### Examples
-
-1. Process a single file with custom output directory:
 ```bash
-python rosbag_segment.py input.bag -o /path/to/output
+# Single episode
+cd ~/code/ORB_SLAM3
+./Examples/Stereo/stereo_kitti Vocabulary/ORBvoc.txt \
+    ~/Desktop/435/20260520_143052-png/episode_001/orb_slam_realsense_d405.yaml \
 ```
 
-2. Process all bag files in a directory with custom output:
+Note: The ORB-SLAM YAML is generated automatically during recording for both D405 (fixed calibration) and D435i (from live calibration).
+
 ```bash
-python rosbag_segment.py /path/to/directory -o /path/to/output
+# Batch all episodes
+    ~/Desktop/435/20260520_143052-png/episode_001 false
+
+# Batch all episodes
+./batches/orbslam_batch_d405.sh ~/Desktop/435/20260520_143052-png
 ```
 
-3. Use custom filename template:
+### Step 4: Transform Trajectory
+
 ```bash
-python rosbag_segment.py input.bag -o /path/to/output -t "custom_segment_{}.bag"
+# Single episode
+python transform_trajectory.py ~/Desktop/435/20260520_143052-png/episode_001
+
+# All episodes recursively
+python transform_trajectory.py --recursive ~/Desktop/435/20260520_143052-png
 ```
 
-4. Process specific bag files using a pattern:
+### Step 5: Extract Gripper
+
 ```bash
-python rosbag_segment.py /path/to/directory -p "oak_d_sr_*.bag"
+# Default: D405 config
+python gripper_estimation_april_tag.py ~/Desktop/435/20260520_143052-png/episode_001
+
+# D435 config
+python gripper_estimation_april_tag.py /output/folder/ --configs configs/sroi_v1_d435.json
 ```
 
-5. Complete example with all options:
+### Step 6: Convert to LeRobot Dataset
+
 ```bash
-python rosbag_segment.py /path/to/directory -o /path/to/output -t "custom_segment_{}.bag" -p "oak_d_sr_*.bag"
+python lerobot/sroi_to_lerobot.py \
+    --data_path ~/Desktop/435/20260520_143052-png \
+    --repo_id sroi/lab_picking \
+    --fps 30 \
+    --root /mnt/data0/data/sroi/sroi_lab_picking \
+    --task "pick the red strawberry"
 ```
 
-### Output
+---
 
-The script will create segmented bag files with the following naming convention:
-- If no template is specified: `{original_filename}_segment_{number}.bag`
-- If template is specified: Uses the provided template with `{}` replaced by the segment number
+## Pipeline B: ROS Bag → LeRobot (Legacy)
 
-
-## Notes
-
-- The script looks for the `/upi/status/is_action` topic in the bag files
-- Segments are created based on continuous `true` values in the action status
-- Progress and results are displayed in the console during processing
-- The script automatically creates the output directory if it doesn't exist
-
-
-# Full Post Processing
-
-Complete workflow for processing ROS bag files from segmentation to gripper estimation:
+Process pre-recorded ROS bag files.
 
 ### Step 1: Segment ROS Bags
+
 ```bash
 python rosbag_segment.py input.bag -o /path/to/output
 ```
 
-### Step 2: Extract Images
+### Step 2: Extract Images from Bags
+
 ```bash
 python3 extract_stereo_rosbags.py /path/to/bag.bag /output/folder/ realsense_d435i --compressed
 ```
 
-### Step 3: Extract Gripper
-```bash
-# Default: D405 config
-python gripper_estimation_april_tag.py /output/folder/
+### Step 3: Create ORB-SLAM Config (D435i from bags only)
 
-# Explicitly select D435 config
-python gripper_estimation_april_tag.py /output/folder/ --configs configs/sroi_v1_d435.json
-```
-
-### Step 4: Extract Images
 ```bash
 python3 create_orb_slam_yaml.py /output/folder/ realsense_d435i
+```
+
+### Step 4: Extract Gripper
+
+```bash
+python gripper_estimation_april_tag.py /output/folder/
+```
+
+Then continue with ORB-SLAM3 (Step 3 in Pipeline A) and follow remaining steps.
+
+---
+
+## Dependencies
+
+```bash
+pip install pyrealsense2 opencv-python numpy tqdm pupil-apriltags
+pip install av  # for --encode-video and decode_videos.py
+pip install lerobot  # for sroi_to_lerobot.py
 ```

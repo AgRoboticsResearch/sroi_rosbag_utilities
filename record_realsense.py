@@ -57,6 +57,7 @@ Dependencies:
 import argparse
 import glob
 import json
+import yaml
 import select
 import shutil
 import sys
@@ -161,6 +162,81 @@ def make_camera_info(intrinsics, width, height, baseline_tx=0.0):
             0.0, 0.0, 1.0, 0.0,
         ],
     }
+
+
+def save_orb_slam_yaml(camera_info_left, camera_info_right, output_path, camera_type):
+    """Generate ORB-SLAM YAML from camera info dicts, reusing logic from create_orb_slam_yaml.py."""
+    template = Path(__file__).parent / "orb_slam_yaml"
+    if camera_type == "realsense_d435i":
+        tmpl_path = template / "RealSense_D435i.yaml"
+    elif camera_type == "realsense_d405":
+        tmpl_path = template / "RealSense_D405.yaml"
+    else:
+        return
+    if not tmpl_path.exists():
+        print(f"  Warning: ORB-SLAM template not found: {tmpl_path}")
+        return
+
+    with open(tmpl_path) as f:
+        content = f.read()
+    if content.startswith("%YAML:1.0"):
+        content = content.replace("%YAML:1.0\n", "", 1)
+    config = yaml.load(content, Loader=yaml.UnsafeLoader)
+
+    # D405 has fixed calibration — just copy template
+    if camera_type == "realsense_d405":
+        shutil.copy2(tmpl_path, output_path)
+        return
+
+    # D435i: fill template from camera info
+    left_K = np.array(camera_info_left["K"]).reshape(3, 3)
+    left_P = np.array(camera_info_left["P"]).reshape(3, 4)
+    right_P = np.array(camera_info_right["P"]).reshape(3, 4)
+    fx, fy = left_K[0, 0], left_K[1, 1]
+    cx, cy = left_K[0, 2], left_K[1, 2]
+    D = camera_info_left["D"]
+
+    config["Camera1.fx"] = float(fx)
+    config["Camera1.fy"] = float(fy)
+    config["Camera1.cx"] = float(cx)
+    config["Camera1.cy"] = float(cy)
+    config["Camera1.k1"] = float(D[0]) if len(D) > 0 else 0.0
+    config["Camera1.k2"] = float(D[1]) if len(D) > 1 else 0.0
+    config["Camera1.p1"] = float(D[2]) if len(D) > 2 else 0.0
+    config["Camera1.p2"] = float(D[3]) if len(D) > 3 else 0.0
+
+    config["Camera2.fx"] = float(fx)
+    config["Camera2.fy"] = float(fy)
+    config["Camera2.cx"] = float(cx)
+    config["Camera2.cy"] = float(cy)
+    config["Camera2.k1"] = float(D[0]) if len(D) > 0 else 0.0
+    config["Camera2.k2"] = float(D[1]) if len(D) > 1 else 0.0
+    config["Camera2.p1"] = float(D[2]) if len(D) > 2 else 0.0
+    config["Camera2.p2"] = float(D[3]) if len(D) > 3 else 0.0
+
+    config["Camera.width"] = camera_info_left["width"]
+    config["Camera.height"] = camera_info_left["height"]
+
+    baseline = -(right_P[0, 3] - left_P[0, 3]) / left_P[0, 0]
+    T = np.eye(4, dtype=np.float32)
+    T[0, 3] = baseline
+    config["Stereo.T_c1_c2"] = {"rows": 4, "cols": 4, "dt": "f", "data": T.flatten().tolist()}
+
+    with open(output_path, "w") as f:
+        f.write("%YAML:1.0\n\n")
+        for key, value in config.items():
+            if key == "Stereo.T_c1_c2" and isinstance(value, dict):
+                f.write(f"{key}: !!opencv-matrix\n")
+                f.write(f"  rows: {value['rows']}\n")
+                f.write(f"  cols: {value['cols']}\n")
+                f.write(f"  dt: {value['dt']}\n")
+                f.write(f"  data: {value['data']}\n")
+            elif isinstance(value, str):
+                f.write(f'{key}: "{value}"\n')
+            else:
+                f.write(f"{key}: {value}\n")
+        f.write("\n")
+    print(f"  ORB-SLAM YAML saved: {output_path.name}")
 
 
 # ---------------------------------------------------------------------------
@@ -279,11 +355,12 @@ class RecordingSession:
             with open(self.episode_dir / name, "w") as f:
                 json.dump(info, f, indent=2)
 
-        # D405 has fixed calibration — copy the ORB-SLAM YAML directly
-        if self.camera_type == "realsense_d405":
-            template = Path(__file__).parent / "orb_slam_yaml" / "RealSense_D405.yaml"
-            if template.exists():
-                shutil.copy2(template, self.episode_dir / "orb_slam_realsense_d405.yaml")
+        # Generate ORB-SLAM YAML from camera info (D405: fixed copy, D435i: filled from calibration)
+        yaml_name = f"orb_slam_{self.camera_type}.yaml"
+        save_orb_slam_yaml(
+            camera_info_left, camera_info_right,
+            self.episode_dir / yaml_name, self.camera_type,
+        )
 
         self.times_file = open(self.episode_dir / "times.txt", "w")
         self.is_recording = True
