@@ -19,9 +19,6 @@ from pathlib import Path
 from PIL import Image
 from typing import Dict, Any
 
-# Add lerobot to path
-sys.path.insert(0, '/home/zfei/code/lerobot/src')
-
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.rotation import Rotation
 
@@ -78,23 +75,8 @@ def load_gripper_data(gripper_path: str):
 
 
 def load_image(image_path: str) -> np.ndarray:
-    """
-    Load and process an image.
-    
-    Args:
-        image_path: Path to image file
-        
-    Returns:
-        image: Image array in CHW format (channels, height, width)
-    """
-    image = Image.open(image_path)
-    image = np.array(image)
-    
-    # Convert to CHW format (channels, height, width)
-    if len(image.shape) == 3:
-        image = image.transpose(2, 0, 1)
-    
-    return image
+    """Load an image as HWC uint8 numpy array."""
+    return np.array(Image.open(image_path))
 
 
 def create_lerobot_dataset(
@@ -148,18 +130,18 @@ def create_lerobot_dataset(
 
     # Process the first episode to determine image shape for features
     first_ep_path = episode_dirs[0]
-    sample_images = sorted(list(first_ep_path.glob("color_*.png")))
+    sample_images = sorted([*first_ep_path.glob("color_*.png"), *first_ep_path.glob("color_*.jpg")])
     if not sample_images:
         raise ValueError(f"No images found in {first_ep_path}")
-    sample_image = load_image(str(sample_images[0]))
-    image_shape = sample_image.shape
+    sample_image = np.array(Image.open(str(sample_images[0])))
+    h, w = sample_image.shape[:2]
 
     # Define dataset features
     features = {
         "observation.images.camera": {
             "dtype": "video",
-            "shape": image_shape,  # (channels, height, width)
-            "names": ["channels", "height", "width"],
+            "shape": (h, w, 3),
+            "names": ["height", "width", "channels"],
         },
         "observation.state": {
             "dtype": "float32",
@@ -229,7 +211,7 @@ def create_lerobot_dataset(
         print(f"Episode length: {min_length} frames")
 
         # Check for image files
-        image_files = sorted(list(ep_path.glob("color_*.png")))
+        image_files = sorted([*ep_path.glob("color_*.png"), *ep_path.glob("color_*.jpg")])
         if len(image_files) < min_length:
             print(f"Warning: Only {len(image_files)} images found, but {min_length} frames needed")
             min_length = min(min_length, len(image_files))
@@ -289,6 +271,8 @@ def create_lerobot_dataset(
 
     print(f"\nDataset created with {dataset.num_episodes} episode(s)")
     print(f"Dataset features: {list(dataset.features.keys())}")
+
+    dataset.finalize()
 
     # Push to hub if requested
     if push_to_hub:
