@@ -38,7 +38,7 @@ except ImportError:
     raise SystemExit(1)
 
 
-JPEG_QUALITY = 90
+PNG_COMPRESSION = 3  # Fast compression, still lossless
 STREAM_NAMES = ["left", "right", "color"]
 
 
@@ -77,8 +77,8 @@ def decode_episode(episode_dir: Path, output_dir: Path):
             stream = container.streams.video[0]
             for frame in container.decode(stream):
                 img = frame.to_ndarray(format="bgr24")
-                out_path = output_dir / f"{stream_name}_{frame_count:06d}.jpg"
-                cv2.imwrite(str(out_path), img, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+                out_path = output_dir / f"{stream_name}_{frame_count:06d}.png"
+                cv2.imwrite(str(out_path), img, [cv2.IMWRITE_PNG_COMPRESSION, PNG_COMPRESSION])
                 frame_count += 1
 
         print(f"  {stream_name}: {frame_count} frames decoded")
@@ -89,19 +89,23 @@ def decode_episode(episode_dir: Path, output_dir: Path):
         print(f"  WARNING: decoded {total_frames} frames, expected {expected_frames}")
 
 
-def get_output_dir(input_dir: Path) -> Path:
-    """Derive output dir by replacing -mp4 postfix with -jpeg."""
-    name = input_dir.name
-    if name.endswith("-mp4"):
-        return input_dir.parent / (name[:-4] + "-jpeg")
-    return input_dir.parent / (name + "-jpeg")
+def get_output_dir(episode_dir: Path) -> Path:
+    """Place decoded output in a sibling -jpeg session folder."""
+    # session-mp4/episode_001 -> session-jpeg/episode_001
+    session_dir = episode_dir.parent
+    session_name = session_dir.name
+    if session_name.endswith("-mp4"):
+        new_session = session_dir.parent / (session_name[:-4] + "-png")
+    else:
+        new_session = session_dir.parent / (session_name + "-png")
+    return new_session / episode_dir.name
 
 
 def find_mp4_dirs(path: Path):
-    """Find all *-mp4 episode directories under path."""
+    """Find all episode directories containing MP4s under path."""
     dirs = []
     for d in sorted(path.iterdir()):
-        if d.is_dir() and d.name.endswith("-mp4") and (d / "timestamps.json").exists():
+        if d.is_dir() and d.name.startswith("episode_") and (d / "timestamps.json").exists():
             dirs.append(d)
     return dirs
 

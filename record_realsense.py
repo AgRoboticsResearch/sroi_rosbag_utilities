@@ -267,8 +267,7 @@ class RecordingSession:
 
         self.episode_count += 1
         self.frame_counter = 0
-        folder_format = "mp4" if self.encode_video else self.image_format
-        self.episode_dir = self.output_dir / f"episode_{self.episode_count:03d}-{folder_format}"
+        self.episode_dir = self.output_dir / f"episode_{self.episode_count:03d}"
         self.episode_dir.mkdir(parents=True, exist_ok=True)
 
         # Save camera info JSONs
@@ -568,6 +567,7 @@ def main():
             print("Camera not responding during warm-up. Check USB connection.")
             pipeline.stop()
             return
+    print("Camera ready.")
 
     # Set up headless terminal if needed
     headless = args.headless
