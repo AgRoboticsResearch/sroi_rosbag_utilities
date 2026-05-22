@@ -17,8 +17,11 @@ import plotly.graph_objects as go
 
 
 def load_kitti_trajectory(path):
-    """Load KITTI-format trajectory (12 floats per line = 3x4 matrix)."""
+    """Load KITTI-format trajectory (12 or 13 floats per line)."""
     traj = np.loadtxt(path)
+    # Drop timestamp column if present (13 values -> 12)
+    if traj.ndim == 2 and traj.shape[1] == 13:
+        traj = traj[:, 1:]
     traj = traj.reshape(-1, 3, 4)
     # Append [0 0 0 1] to make 4x4
     append = np.zeros((traj.shape[0], 1, 4))
@@ -107,6 +110,23 @@ def visualize(trajectory_path):
     )
 
     fig.show()
+
+    # Save plot as JPG using matplotlib (avoids kaleido version issues)
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    fig_mpl, ax = plt.subplots(figsize=(8, 8), subplot_kw={'projection': '3d'})
+    ax.plot(x, y, z, '-b', linewidth=1.5)
+    ax.scatter([x[0]], [y[0]], [z[0]], c='green', s=60, label='Start')
+    ax.scatter([x[-1]], [y[-1]], [z[-1]], c='red', s=60, label='End')
+    ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+    ax.set_title(f"{path.name}\n{len(traj)} frames, {total_length:.3f}m")
+    ax.legend()
+    out_path = str(path.with_suffix(".jpg"))
+    fig_mpl.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig_mpl)
+    print(f"Saved plot to {out_path}")
+
     print(f"Path length: {total_length:.3f}m")
     print(f"Frames: {len(traj)}")
     print(f"X range: [{x.min():.4f}, {x.max():.4f}]")
