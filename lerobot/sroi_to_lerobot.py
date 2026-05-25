@@ -12,9 +12,11 @@ Usage:
 
 import argparse
 import logging
+import multiprocessing as mp
 import numpy as np
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from PIL import Image
 from typing import Dict, Any
@@ -50,12 +52,8 @@ def load_trajectory_data(traj_path: str):
     poses = np.concatenate((traj, append_row), axis=1)
     
     # Extract positions and orientations
-    positions = poses[:, :3, 3]  # Translation part
-    rotvecs = np.zeros((len(poses), 3))  # wx, wy, wz
-    
-    for i, pose in enumerate(poses):
-        rotation_matrix = pose[:3, :3]
-        rotvecs[i] = Rotation.from_matrix(rotation_matrix).as_rotvec()
+    positions = poses[:, :3, 3]
+    rotvecs = np.array([Rotation.from_matrix(p[:3, :3]).as_rotvec() for p in poses])
     
     return timestamps, poses, positions, rotvecs
 
@@ -74,9 +72,18 @@ def load_gripper_data(gripper_path: str):
     return gripper_distances
 
 
-def load_image(image_path: str) -> np.ndarray:
-    """Load an image as HWC uint8 numpy array."""
-    return np.array(Image.open(image_path))
+def _load_image(path_str: str) -> np.ndarray:
+    """Load a single image from path string. Used by process pool workers."""
+    return np.array(Image.open(path_str))
+
+
+def load_images_parallel(image_files, num_workers: int) -> list[np.ndarray]:
+    """Load images in parallel using a process pool."""
+    paths = [str(f) for f in image_files]
+    if num_workers <= 1:
+        return [_load_image(p) for p in paths]
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        return list(executor.map(_load_image, paths, chunksize=max(1, len(paths) // (num_workers * 4))))
 
 
 def create_lerobot_dataset(
@@ -87,6 +94,7 @@ def create_lerobot_dataset(
     push_to_hub: bool = False,
     single_task: str = "End-effector manipulation task",
     episodes: str = "all",
+    num_workers: int = 4,
 ):
     """
     Convert SROI data to LeRobot dataset format.
@@ -137,24 +145,13 @@ def create_lerobot_dataset(
     h, w = sample_image.shape[:2]
 
     # Define dataset features
+    # observation.state is omitted — it's derived from the action column
+    # during training via DeriveStateFromActionStep (Pattern B).
     features = {
         "observation.images.camera": {
             "dtype": "video",
             "shape": (h, w, 3),
             "names": ["height", "width", "channels"],
-        },
-        "observation.state": {
-            "dtype": "float32",
-            "names": [
-                "ee.x",
-                "ee.y",
-                "ee.z",
-                "ee.wx",
-                "ee.wy",
-                "ee.wz",
-                "ee.gripper_pos"
-            ],
-            "shape": (7,)
         },
         "action": {
             "dtype": "float32",
@@ -221,23 +218,15 @@ def create_lerobot_dataset(
             rotvecs = rotvecs[:min_length]
             gripper_distances = gripper_distances[:min_length]
 
+        print(f"Loading {min_length} images with {num_workers} worker(s)...")
+
+        images = load_images_parallel(image_files[:min_length], num_workers)
+
         print("Adding frames to dataset...")
 
         # Add frames to dataset
         for i in range(min_length):
-            # Load image
-            image = load_image(str(image_files[i]))
-
-            # Current state
-            state = np.array([
-                positions[i, 0],  # x
-                positions[i, 1],  # y
-                positions[i, 2],  # z
-                rotvecs[i, 0],    # wx
-                rotvecs[i, 1],    # wy
-                rotvecs[i, 2],    # wz
-                gripper_distances[i],  # gripper_pos
-            ], dtype=np.float32)
+            image = images[i]
 
             # Action (next state)
             # For the last frame, we repeat the last state
@@ -255,7 +244,6 @@ def create_lerobot_dataset(
             # Build frame
             frame = {
                 "observation.images.camera": image,
-                "observation.state": state,
                 "action": action,
                 "task": single_task,
             }
@@ -326,6 +314,12 @@ def main():
         default="all",
         help="Comma-separated list of episode subdirectory names to convert, or 'all' (default: all)"
     )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of parallel workers for image loading (default: 4, use 1 for sequential)"
+    )
 
     args = parser.parse_args()
     
@@ -344,7 +338,8 @@ def main():
         root=args.root,
         push_to_hub=args.push_to_hub,
         single_task=args.task,
-        episodes=args.episodes
+        episodes=args.episodes,
+        num_workers=args.num_workers,
     )
     
     print("Conversion completed successfully!")
