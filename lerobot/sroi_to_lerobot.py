@@ -11,10 +11,12 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import multiprocessing as mp
 import numpy as np
 import os
+import shutil
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -256,6 +258,15 @@ def create_lerobot_dataset(
         # Save episode
         dataset.save_episode()
         print(f"Episode {ep_path.name} saved")
+
+        # Copy camera info files per session
+        camera_info_files = sorted(ep_path.glob("camera_info_*.json"))
+        if camera_info_files:
+            cam_dir = dataset.root / "meta" / "camera_info" / ep_path.name
+            cam_dir.mkdir(parents=True, exist_ok=True)
+            for cif in camera_info_files:
+                shutil.copy2(cif, cam_dir / cif.name)
+            print(f"Copied {len(camera_info_files)} camera info file(s) to {cam_dir}")
 
     print(f"\nDataset created with {dataset.num_episodes} episode(s)")
     print(f"Dataset features: {list(dataset.features.keys())}")
