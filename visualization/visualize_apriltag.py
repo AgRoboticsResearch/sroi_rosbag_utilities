@@ -86,7 +86,7 @@ def main():
     display_fps = 0.0
 
     print(f"Camera: {args.camera} ({defaults['width']}x{defaults['height']})")
-    print(f"Looking for tag16h5 IDs: {args.left_id} (left), {args.right_id} (right)")
+    print(f"Looking for {args.tag_family} IDs: {args.left_id} (left), {args.right_id} (right)")
     print("Controls: q=quit  r=toggle ROI  +/-=adjust ROI")
 
     try:

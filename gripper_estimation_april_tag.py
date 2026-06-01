@@ -54,6 +54,11 @@ def parse_args():
         action="store_true",
         help="Process all episode subdirectories recursively",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-frame detection diagnostics",
+    )
     return parser.parse_args()
 
 
@@ -75,25 +80,26 @@ def print_config(cfg, path):
     print(f"  tag_family           : {cfg['tag_family']}")
     print(f"  left_gripper_tag_id  : {cfg['left_gripper_tag_id']}")
     print(f"  right_gripper_tag_id : {cfg['right_gripper_tag_id']}")
-    print(f"  norminal_diag_distance: {cfg['norminal_diag_distance']}")
+    print(f"  nominal_diag_distance: {cfg.get('nominal_diag_distance', cfg.get('norminal_diag_distance', 'N/A'))}")
     print(f"  threshold            : {cfg['threshold']}")
 
 
-def check_tag_valid(tag, norminal_diag_distance=50, threshold=10):
+def check_tag_valid(tag, nominal_diag_distance=50, threshold=10, verbose=False):
     """Check whether a detected tag's diagonal distances are within expected range."""
     diag_distance_1 = np.linalg.norm(tag.corners[0] - tag.corners[2])
     diag_distance_2 = np.linalg.norm(tag.corners[1] - tag.corners[3])
-    print(f"diag_distance_1: {diag_distance_1}, diag_distance_2: {diag_distance_2}, "
-          f"norminal_diag_distance: {norminal_diag_distance}")
-    if abs(diag_distance_1 - norminal_diag_distance) > threshold or \
-       abs(diag_distance_2 - norminal_diag_distance) > threshold:
+    if verbose:
+        print(f"diag_distance_1: {diag_distance_1}, diag_distance_2: {diag_distance_2}, "
+              f"nominal_diag_distance: {nominal_diag_distance}")
+    if abs(diag_distance_1 - nominal_diag_distance) > threshold or \
+       abs(diag_distance_2 - nominal_diag_distance) > threshold:
         return False
     return True
 
 
 def detect_april_tag(image, gripper_roi, at_detector, left_gripper_tag_id,
-                     right_gripper_tag_id, norminal_diag_distance, threshold,
-                     gripper_roi_bottom=None):
+                     right_gripper_tag_id, nominal_diag_distance, threshold,
+                     gripper_roi_bottom=None, verbose=False):
     """Detect left and right gripper AprilTags and return the pixel distance between their centers."""
     left_gripper_tag = None
     right_gripper_tag = None
@@ -103,15 +109,16 @@ def detect_april_tag(image, gripper_roi, at_detector, left_gripper_tag_id,
     if gripper_roi_bottom is not None:
         gray[gripper_roi_bottom:, :] = 0
     ret = at_detector.detect(gray)
-    print("detected tag: ", ret)
+    if verbose:
+        print("detected tag: ", ret)
     for res in ret:
         if res.tag_id == left_gripper_tag_id:
-            if check_tag_valid(res, norminal_diag_distance=norminal_diag_distance,
-                               threshold=threshold):
+            if check_tag_valid(res, nominal_diag_distance=nominal_diag_distance,
+                               threshold=threshold, verbose=verbose):
                 left_gripper_tag = res
         elif res.tag_id == right_gripper_tag_id:
-            if check_tag_valid(res, norminal_diag_distance=norminal_diag_distance,
-                               threshold=threshold):
+            if check_tag_valid(res, nominal_diag_distance=nominal_diag_distance,
+                               threshold=threshold, verbose=verbose):
                 right_gripper_tag = res
 
     if left_gripper_tag is not None and right_gripper_tag is not None:
@@ -245,7 +252,7 @@ def calibrate(data_folder, config_path, output_path):
 
     cv.createTrackbar("top roi", win, cfg["gripper_roi"], h, lambda x: None)
     cv.createTrackbar("bottom roi", win, default_bottom, h, lambda x: None)
-    cv.createTrackbar("diag dist", win, cfg["norminal_diag_distance"], 200, lambda x: None)
+    cv.createTrackbar("diag dist", win, cfg.get("nominal_diag_distance", cfg.get("norminal_diag_distance", 50)), 200, lambda x: None)
     cv.createTrackbar("threshold", win, cfg["threshold"], 100, lambda x: None)
 
     detector = Detector(families=tag_family, nthreads=1, quad_decimate=1.0,
@@ -301,7 +308,7 @@ def calibrate(data_folder, config_path, output_path):
                 "tag_family": tag_family,
                 "left_gripper_tag_id": left_id,
                 "right_gripper_tag_id": right_id,
-                "norminal_diag_distance": norminal_diag,
+                "nominal_diag_distance": norminal_diag,
                 "threshold": threshold_val,
             }
             out = output_path or config_path
@@ -317,7 +324,7 @@ def calibrate(data_folder, config_path, output_path):
     cv.destroyAllWindows()
 
 
-def main(data_folder, config_path):
+def main(data_folder, config_path, verbose=False):
     if not data_folder.endswith('/'):
         data_folder += '/'
 
@@ -332,7 +339,7 @@ def main(data_folder, config_path):
     tag_family = cfg["tag_family"]
     left_gripper_tag_id = cfg["left_gripper_tag_id"]
     right_gripper_tag_id = cfg["right_gripper_tag_id"]
-    norminal_diag_distance = cfg["norminal_diag_distance"]
+    nominal_diag_distance = cfg.get("nominal_diag_distance", cfg.get("norminal_diag_distance", 50))
     threshold = cfg["threshold"]
 
     at_detector = Detector(
@@ -345,21 +352,25 @@ def main(data_folder, config_path):
         debug=0,
     )
 
-    image_nums = len(glob.glob(data_folder + f"color_*.png"))
+    images = sorted(glob.glob(data_folder + "color_*.png") + glob.glob(data_folder + "color_*.jpg"))
+    image_nums = len(images)
     print("image_nums: ", image_nums)
     gripper_distances = []
-    for idx in tqdm(range(image_nums)):
-        color_image_path = data_folder + f"color_{idx:06d}.png"
+    for color_image_path in tqdm(images):
         color_image = cv.imread(color_image_path)
         gripper_distance = detect_april_tag(
             color_image, gripper_roi, at_detector,
             left_gripper_tag_id, right_gripper_tag_id,
-            norminal_diag_distance, threshold,
+            nominal_diag_distance, threshold,
             gripper_roi_bottom=gripper_roi_bottom,
+            verbose=verbose,
         )
         gripper_distances.append(gripper_distance)
 
     gripper_distance_valid = [x for x in gripper_distances if x is not None]
+    if not gripper_distance_valid:
+        print(f"Error: no valid AprilTag detections in {data_folder}. Skipping.")
+        return
     max_gripper_distance = max(gripper_distance_valid)
     min_gripper_distance = min(gripper_distance_valid)
     print("max_gripper_distance: ", max_gripper_distance)
@@ -405,6 +416,6 @@ if __name__ == "__main__":
         print(f"Processing {len(dirs)} episode(s)")
         for d in dirs:
             print(f"\n--- {d.name} ---")
-            main(str(d) + '/', args.configs)
+            main(str(d) + '/', args.configs, verbose=args.verbose)
     else:
-        main(data_path, args.configs)
+        main(data_path, args.configs, verbose=args.verbose)

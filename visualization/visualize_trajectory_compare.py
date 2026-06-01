@@ -26,6 +26,11 @@ T_CAMERA_TO_EE = np.array([
 
 def load_kitti_trajectory(path):
     traj = np.loadtxt(path)
+    if traj.ndim == 1:
+        traj = traj.reshape(1, -1)
+    # Drop timestamp column if present (13 values -> 12)
+    if traj.ndim == 2 and traj.shape[1] == 13:
+        traj = traj[:, 1:]
     traj = traj.reshape(-1, 3, 4)
     append = np.zeros((traj.shape[0], 1, 4))
     append[:, 0, 3] = 1

@@ -42,8 +42,9 @@ SEGMENT_FOLDERS=()
 for dir in "$INPUT_DIR"/*_segment_*/; do
     [ -d "$dir" ] || continue
     dir="${dir%/}"  # Remove trailing slash
-    # Check for left/right images
-    if ls "$dir"/left_*.png 1>/dev/null 2>&1 && ls "$dir"/right_*.png 1>/dev/null 2>&1; then
+    # Check for left/right images (PNG or JPEG)
+    if (ls "$dir"/left_*.png 1>/dev/null 2>&1 || ls "$dir"/left_*.jpg 1>/dev/null 2>&1) && \
+       (ls "$dir"/right_*.png 1>/dev/null 2>&1 || ls "$dir"/right_*.jpg 1>/dev/null 2>&1); then
         SEGMENT_FOLDERS+=("$dir")
     fi
 done

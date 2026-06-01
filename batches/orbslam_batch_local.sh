@@ -51,7 +51,8 @@ EPISODE_FOLDERS=()
 for dir in "$SESSION_DIR"/episode_*/; do
     [ -d "$dir" ] || continue
     dir="${dir%/}"
-    if ls "$dir"/left_*.png 1>/dev/null 2>&1 && ls "$dir"/right_*.png 1>/dev/null 2>&1; then
+    if (ls "$dir"/left_*.png 1>/dev/null 2>&1 || ls "$dir"/left_*.jpg 1>/dev/null 2>&1) && \
+       (ls "$dir"/right_*.png 1>/dev/null 2>&1 || ls "$dir"/right_*.jpg 1>/dev/null 2>&1); then
         EPISODE_FOLDERS+=("$dir")
     fi
 done

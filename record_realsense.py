@@ -19,7 +19,7 @@ Storage modes (--image-format + --encode-video):
 
 Folder naming:
     Sessions:   {timestamp}-{format}   e.g. 20260520_143052-png
-    Episodes:   episode_NNN-{format}   e.g. episode_001-mp4
+    Episodes:   episode_NNN             e.g. episode_001
     Where {format} is "png", "jpeg", or "mp4".
 
 Each episode contains:
@@ -46,7 +46,7 @@ Usage examples:
     # MP4 with AV1 codec (better compression, needs libsvtav1)
     python record_realsense.py -o /path/to/output --encode-video --vcodec libsvtav1
 
-    # Decode MP4s back to JPEGs for downstream pipelines
+    # Decode MP4s back to PNGs for downstream pipelines
     python decode_videos.py /path/to/session-mp4 --recursive
 
 Dependencies:
@@ -181,7 +181,10 @@ def save_orb_slam_yaml(camera_info_left, camera_info_right, output_path, camera_
         content = f.read()
     if content.startswith("%YAML:1.0"):
         content = content.replace("%YAML:1.0\n", "", 1)
-    config = yaml.load(content, Loader=yaml.UnsafeLoader)
+    try:
+        config = yaml.load(content, Loader=yaml.UnsafeLoader)
+    except yaml.YAMLError:
+        config = yaml.safe_load(content)
 
     # D405 has fixed calibration — just copy template
     if camera_type == "realsense_d405":
@@ -272,6 +275,9 @@ def encode_episode_to_video(episode_dir, fps, vcodec="libx264", crf=23, g=2,
                 continue
             frames_rgb = None
             first = cv2.imread(input_list[0])
+            if first is None:
+                print(f"  Warning: cannot read {input_list[0]}, skipping {stream_name}.")
+                continue
             height, width = first.shape[:2]
 
         video_path = episode_dir / f"{stream_name}.mp4"
@@ -293,21 +299,21 @@ def encode_episode_to_video(episode_dir, fps, vcodec="libx264", crf=23, g=2,
             if frames_rgb:
                 for img_rgb in frames_rgb:
                     frame = av.VideoFrame.from_ndarray(img_rgb, format="rgb24")
-                    packet = out_stream.encode(frame)
-                    if packet:
+                    for packet in out_stream.encode(frame):
                         output.mux(packet)
             else:
                 for img_path in input_list:
                     img = cv2.imread(img_path)
+                    if img is None:
+                        print(f"  Warning: cannot read {img_path}, skipping frame.")
+                        continue
                     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                     frame = av.VideoFrame.from_ndarray(img_rgb, format="rgb24")
-                    packet = out_stream.encode(frame)
-                    if packet:
+                    for packet in out_stream.encode(frame):
                         output.mux(packet)
 
             # Flush encoder
-            packet = out_stream.encode()
-            if packet:
+            for packet in out_stream.encode():
                 output.mux(packet)
 
         # Delete images from disk (only for disk-based path)

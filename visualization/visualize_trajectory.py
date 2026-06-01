@@ -19,6 +19,9 @@ import plotly.graph_objects as go
 def load_kitti_trajectory(path):
     """Load KITTI-format trajectory (12 or 13 floats per line)."""
     traj = np.loadtxt(path)
+    # Handle 1D single-line case
+    if traj.ndim == 1:
+        traj = traj.reshape(1, -1)
     # Drop timestamp column if present (13 values -> 12)
     if traj.ndim == 2 and traj.shape[1] == 13:
         traj = traj[:, 1:]

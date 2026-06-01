@@ -41,17 +41,13 @@ Produces a sibling folder with `-png` postfix containing PNG images for ORB-SLAM
 
 ### Step 3: Run ORB-SLAM3
 
+Note: The ORB-SLAM YAML is generated automatically during recording for both D405 (fixed calibration) and D435i (from live calibration).
+
 ```bash
 # Single episode
 cd ~/code/ORB_SLAM3
 ./Examples/Stereo/stereo_kitti Vocabulary/ORBvoc.txt \
     ~/Desktop/435/20260520_143052-png/episode_001/orb_slam_realsense_d405.yaml \
-```
-
-Note: The ORB-SLAM YAML is generated automatically during recording for both D405 (fixed calibration) and D435i (from live calibration).
-
-```bash
-# Batch all episodes
     ~/Desktop/435/20260520_143052-png/episode_001 false
 
 # Batch all episodes
@@ -126,7 +122,9 @@ Then continue with ORB-SLAM3 (Step 3 in Pipeline A) and follow remaining steps.
 ## Dependencies
 
 ```bash
-pip install pyrealsense2 opencv-python numpy tqdm pupil-apriltags
+pip install pyrealsense2 opencv-python numpy tqdm pupil-apriltags scipy PyYAML
 pip install av  # for --encode-video and decode_videos.py
+pip install rosbags  # for extract_stereo_rosbags.py (Pipeline B)
 pip install lerobot  # for sroi_to_lerobot.py
+pip install plotly matplotlib  # for visualization tools
 ```

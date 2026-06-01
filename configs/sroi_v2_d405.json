@@ -4,6 +4,6 @@
     "tag_family": "tag16h5",
     "left_gripper_tag_id": 0,
     "right_gripper_tag_id": 15,
-    "norminal_diag_distance": 42,
+    "nominal_diag_distance": 42,
     "threshold": 15
 }

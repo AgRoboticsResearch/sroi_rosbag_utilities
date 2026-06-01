@@ -274,13 +274,12 @@ def main():
                 print(f"  WARNING: {len(img_files)} {cam} images vs {n_frames} frames. Using min count.")
                 n_frames = min(n_frames, len(img_files))
 
-        # Pre-load images
-        cam_images = {}
+        # Build file lists (load lazily per frame to reduce memory)
+        cam_img_files = {}
         for cam in args.cameras:
             if cam not in image_sizes:
                 continue
-            img_files = get_image_files(ep_dir, cam)[:n_frames]
-            cam_images[cam] = [np.array(Image.open(str(f))) for f in img_files]
+            cam_img_files[cam] = get_image_files(ep_dir, cam)[:n_frames]
 
         print(f"  Converting {n_frames} frames ...")
 
@@ -299,7 +298,7 @@ def main():
             for cam in args.cameras:
                 if cam not in image_sizes:
                     continue
-                frame[f"observation.images.{cam}"] = cam_images[cam][i]
+                frame[f"observation.images.{cam}"] = np.array(Image.open(str(cam_img_files[cam][i])))
 
             dataset.add_frame(frame)
 

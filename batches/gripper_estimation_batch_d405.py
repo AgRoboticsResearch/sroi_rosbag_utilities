@@ -28,17 +28,17 @@ from tqdm import tqdm
 import numpy as np
 
 
-def check_tag_valid(tag, norminal_diag_distance=50, threshold=10):
+def check_tag_valid(tag, nominal_diag_distance=50, threshold=10):
     """Check if detected tag is valid based on diagonal distance."""
     diag_distance_1 = np.linalg.norm(tag.corners[0] - tag.corners[2])
     diag_distance_2 = np.linalg.norm(tag.corners[1] - tag.corners[3])
-    if abs(diag_distance_1 - norminal_diag_distance) > threshold or abs(diag_distance_2 - norminal_diag_distance) > threshold:
+    if abs(diag_distance_1 - nominal_diag_distance) > threshold or abs(diag_distance_2 - nominal_diag_distance) > threshold:
         return False
     else:
         return True
 
 
-def detect_april_tag(image, gripper_roi, at_detector, left_gripper_tag_id, right_gripper_tag_id, norminal_diag_distance, threshold, verbose=False):
+def detect_april_tag(image, gripper_roi, at_detector, left_gripper_tag_id, right_gripper_tag_id, nominal_diag_distance, threshold, verbose=False):
     """Detect AprilTags and compute gripper distance."""
     gripper_distance_current = None
     left_gripper_tag = None
@@ -51,10 +51,10 @@ def detect_april_tag(image, gripper_roi, at_detector, left_gripper_tag_id, right
         print("detected tag: ", ret)
     for res in ret:
         if res.tag_id == left_gripper_tag_id:
-            if check_tag_valid(res, norminal_diag_distance=norminal_diag_distance, threshold=threshold):
+            if check_tag_valid(res, nominal_diag_distance=nominal_diag_distance, threshold=threshold):
                 left_gripper_tag = res
         elif res.tag_id == right_gripper_tag_id:
-            if check_tag_valid(res, norminal_diag_distance=norminal_diag_distance, threshold=threshold):
+            if check_tag_valid(res, nominal_diag_distance=nominal_diag_distance, threshold=threshold):
                 right_gripper_tag = res
 
     if left_gripper_tag is not None and right_gripper_tag is not None:
@@ -139,8 +139,8 @@ def process_folder(data_folder: Path, at_detector, args) -> dict:
         "valid_detections": 0,
     }
 
-    # Check for color images
-    color_images = sorted(data_folder.glob("color_*.png"))
+    # Check for color images (PNG or JPEG)
+    color_images = sorted(data_folder.glob("color_*.png")) or sorted(data_folder.glob("color_*.jpg"))
     if not color_images:
         result["status"] = "skipped"
         result["error"] = "No color images found"
@@ -158,8 +158,7 @@ def process_folder(data_folder: Path, at_detector, args) -> dict:
         result["frame_count"] = image_nums
 
         gripper_distances = []
-        for idx in tqdm(range(image_nums), desc=f"  Frames", leave=False):
-            color_image_path = data_folder / f"color_{idx:06d}.png"
+        for color_image_path in tqdm(color_images, desc=f"  Frames", leave=False):
             color_image = cv.imread(str(color_image_path))
             if color_image is None:
                 gripper_distances.append(None)
@@ -226,7 +225,7 @@ def find_data_folders(input_dir: Path) -> list:
     for item in sorted(input_dir.iterdir()):
         if item.is_dir() and item.name != "segment_bags":
             # Check if folder has color images
-            color_images = list(item.glob("color_*.png"))
+            color_images = list(item.glob("color_*.png")) or list(item.glob("color_*.jpg"))
             if color_images:
                 data_folders.append(item)
     return data_folders

@@ -52,18 +52,24 @@ def get_T_ee_cam():
 
 
 def process_single(input_path, output_path):
-    """Transform one CameraTrajectory.txt to EE frame."""
+    """Transform one CameraTrajectory.txt to EE frame.
+
+    Each pose T_w_cam represents the camera pose in world frame (maps cam -> world).
+    The EE pose is obtained by composing with the fixed extrinsic T_cam_ee:
+        T_w_ee = T_w_cam @ T_cam_ee
+    """
     T_ee_cam = get_T_ee_cam()
     T_cam_ee = np.linalg.inv(T_ee_cam)
 
     print(f"T_ee_cam:\n{np.round(T_ee_cam, 4)}")
+    print(f"T_cam_ee:\n{np.round(T_cam_ee, 4)}")
 
     poses_cam = load_slam_trajectory(input_path)
     print(f"Loaded {len(poses_cam)} poses from {input_path}")
 
     poses_ee = []
     for T_w_cam in poses_cam:
-        T_w_ee = T_ee_cam @ T_w_cam @ T_cam_ee
+        T_w_ee = T_w_cam @ T_cam_ee
         poses_ee.append(T_w_ee)
 
     save_slam_trajectory(output_path, poses_ee)

@@ -131,7 +131,7 @@ def process_bag_file(input_file, output_dir=None, template=None, organize_by_sou
 
 
 def batch_process_bag_files(input_dir, output_dir=None, pattern='*.bag', organize_by_source=False,
-                            dry_run=False, log_file=None):
+                            dry_run=False, log_file=None, verbose=False):
     """Process multiple bag files in a directory."""
     # Validate input directory
     if not os.path.isdir(input_dir):
@@ -154,6 +154,8 @@ def batch_process_bag_files(input_dir, output_dir=None, pattern='*.bag', organiz
     print(f"File pattern: {pattern}")
     print(f"Organize by source: {organize_by_source}")
     print(f"Found {len(bag_files)} bag files to process")
+    if verbose:
+        print(f"Verbose mode enabled")
     print(f"{'='*70}")
 
     if dry_run:
@@ -174,6 +176,9 @@ def batch_process_bag_files(input_dir, output_dir=None, pattern='*.bag', organiz
         result = process_bag_file(bag_file, output_dir, organize_by_source=organize_by_source)
         results.append(result)
         total_segments += result['num_segments']
+        if verbose and result['output_files']:
+            for seg in result['output_files']:
+                print(f"    Segment {seg['segment']}: {seg['file']} ({seg['duration']:.3f}s)")
 
     # Generate summary
     end_time = datetime.now()
@@ -245,5 +250,6 @@ Examples:
         pattern=args.pattern,
         organize_by_source=args.organize_by_source,
         dry_run=args.dry_run,
-        log_file=args.log
+        log_file=args.log,
+        verbose=args.verbose
     )

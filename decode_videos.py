@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Decode MP4 episode folders back to JPEG image sequences.
+Decode MP4 episode folders back to PNG image sequences.
 
 Recovers frames from left.mp4, right.mp4, color.mp4 in episode directories
 that were encoded by record_realsense.py --encode-video. Produces PNG images
@@ -70,7 +70,7 @@ def decode_episode(episode_dir: Path, output_dir: Path):
             ts_data = json.load(f)
             expected_frames = ts_data.get("frame_count")
 
-    total_frames = None
+    stream_frame_counts = {}
     for stream_name in STREAM_NAMES:
         mp4_path = episode_dir / f"{stream_name}.mp4"
         if not mp4_path.exists():
@@ -90,11 +90,15 @@ def decode_episode(episode_dir: Path, output_dir: Path):
             print(f"  WARNING: corrupt {stream_name}.mp4, decoded {frame_count} frames before error: {e}")
 
         print(f"  {stream_name}: {frame_count} frames decoded")
-        if total_frames is None:
-            total_frames = frame_count
+        stream_frame_counts[stream_name] = frame_count
 
-    if expected_frames is not None and total_frames != expected_frames:
-        print(f"  WARNING: decoded {total_frames} frames, expected {expected_frames}")
+    # Validate each stream against expected count and each other
+    counts = list(stream_frame_counts.values())
+    if counts:
+        if expected_frames is not None and counts[0] != expected_frames:
+            print(f"  WARNING: decoded {counts[0]} frames, expected {expected_frames}")
+        if len(set(counts)) > 1:
+            print(f"  WARNING: stream frame counts differ: {stream_frame_counts}")
 
 
 def get_output_dir(episode_dir: Path, output_root: Path = None) -> Path:
