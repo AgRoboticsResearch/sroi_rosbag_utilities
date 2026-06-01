@@ -243,11 +243,13 @@ def save_orb_slam_yaml(camera_info_left, camera_info_right, output_path, camera_
 # Video encoding (learned from LeRobot's encode_video_frames)
 # ---------------------------------------------------------------------------
 def encode_episode_to_video(episode_dir, fps, vcodec="libx264", crf=23, g=2,
-                            image_format="png"):
+                            image_format="png", mem_frames=None):
     """Encode per-camera image sequences in an episode directory to MP4 files.
 
     Produces left.mp4, right.mp4, color.mp4 alongside timestamps.json.
-    Deletes the original images after successful encoding.
+    If mem_frames is provided (dict of {stream_name: [rgb_arrays]}), encodes
+    directly from memory without reading from disk.
+    Otherwise reads from disk and deletes the original images after encoding.
     """
     if av is None:
         print("PyAV is required for video encoding: pip install av")
@@ -257,23 +259,29 @@ def encode_episode_to_video(episode_dir, fps, vcodec="libx264", crf=23, g=2,
     streams = ["left", "right", "color"]
 
     for stream_name in streams:
-        pattern = f"{stream_name}_*{ext}"
-        input_list = sorted(glob.glob(str(episode_dir / pattern)))
-        if not input_list:
-            print(f"  No {stream_name} frames found, skipping.")
-            continue
-
-        # Read first frame to get dimensions
-        first = cv2.imread(input_list[0])
-        height, width = first.shape[:2]
+        if mem_frames and stream_name in mem_frames:
+            frames_rgb = mem_frames[stream_name]
+            if not frames_rgb:
+                continue
+            height, width = frames_rgb[0].shape[:2]
+        else:
+            pattern = f"{stream_name}_*{ext}"
+            input_list = sorted(glob.glob(str(episode_dir / pattern)))
+            if not input_list:
+                print(f"  No {stream_name} frames found, skipping.")
+                continue
+            frames_rgb = None
+            first = cv2.imread(input_list[0])
+            height, width = first.shape[:2]
 
         video_path = episode_dir / f"{stream_name}.mp4"
         video_options = {
             "crf": str(crf),
             "g": str(g),
         }
+        n_frames = len(frames_rgb) if frames_rgb else len(input_list)
 
-        print(f"  Encoding {stream_name}: {len(input_list)} frames "
+        print(f"  Encoding {stream_name}: {n_frames} frames "
               f"{width}x{height} -> {video_path.name} ({vcodec}, crf={crf})")
 
         with av.open(str(video_path), "w") as output:
@@ -282,22 +290,30 @@ def encode_episode_to_video(episode_dir, fps, vcodec="libx264", crf=23, g=2,
             out_stream.width = width
             out_stream.height = height
 
-            for img_path in input_list:
-                img = cv2.imread(img_path)
-                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                frame = av.VideoFrame.from_ndarray(img_rgb, format="rgb24")
-                packet = out_stream.encode(frame)
-                if packet:
-                    output.mux(packet)
+            if frames_rgb:
+                for img_rgb in frames_rgb:
+                    frame = av.VideoFrame.from_ndarray(img_rgb, format="rgb24")
+                    packet = out_stream.encode(frame)
+                    if packet:
+                        output.mux(packet)
+            else:
+                for img_path in input_list:
+                    img = cv2.imread(img_path)
+                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    frame = av.VideoFrame.from_ndarray(img_rgb, format="rgb24")
+                    packet = out_stream.encode(frame)
+                    if packet:
+                        output.mux(packet)
 
             # Flush encoder
             packet = out_stream.encode()
             if packet:
                 output.mux(packet)
 
-        # Delete PNGs after successful encoding
-        for img_path in input_list:
-            Path(img_path).unlink()
+        # Delete images from disk (only for disk-based path)
+        if not frames_rgb:
+            for img_path in input_list:
+                Path(img_path).unlink()
 
     return True
 
@@ -310,7 +326,7 @@ class RecordingSession:
 
     def __init__(self, output_dir: Path, camera_type: str = "realsense_d435i",
                  encode_video: bool = False, vcodec: str = "libx264",
-                 image_format: str = "png", fps: int = 30):
+                 image_format: str = "png", fps: int = 30, mem: bool = False):
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.camera_type = camera_type
@@ -318,12 +334,14 @@ class RecordingSession:
         self.vcodec = vcodec
         self.image_format = image_format
         self.fps = fps
+        self.mem = mem
         self.episode_count = 0
         self.is_recording = False
         self.frame_counter = 0
         self.episode_dir = None
         self.times_file = None
         self.timestamps = []
+        self._mem_frames = None  # {stream_name: [rgb_arrays]}
 
     @property
     def ext(self):
@@ -364,22 +382,45 @@ class RecordingSession:
 
         self.times_file = open(self.episode_dir / "times.txt", "w")
         self.is_recording = True
+        if self.mem and self.encode_video:
+            self._mem_frames = {"left": [], "right": [], "color": []}
         print(f"Recording episode {self.episode_count} -> {self.episode_dir}")
+
+    def _mem_usage(self):
+        """Return human-readable total memory used by buffered frames."""
+        if not self._mem_frames:
+            return "0 B"
+        total = sum(a.nbytes for frames in self._mem_frames.values() for a in frames)
+        for unit in ("B", "KB", "MB", "GB"):
+            if total < 1024:
+                return f"{total:.1f} {unit}"
+            total /= 1024
+        return f"{total:.1f} TB"
 
     def save_frame(self, timestamp, left_img, right_img, color_img):
         """Save a single frame (left IR, right IR, color) and timestamp."""
         if not self.is_recording:
             return
 
-        idx = self.frame_counter
-        ext = self.ext
-        params = self.imwrite_params
-        cv2.imwrite(str(self.episode_dir / f"left_{idx:06d}{ext}"), left_img, params)
-        cv2.imwrite(str(self.episode_dir / f"right_{idx:06d}{ext}"), right_img, params)
-        cv2.imwrite(str(self.episode_dir / f"color_{idx:06d}{ext}"), color_img, params)
+        if self._mem_frames is not None:
+            # Buffer RGB frames in memory (skip disk write entirely)
+            self._mem_frames["left"].append(cv2.cvtColor(left_img, cv2.COLOR_GRAY2RGB))
+            self._mem_frames["right"].append(cv2.cvtColor(right_img, cv2.COLOR_GRAY2RGB))
+            self._mem_frames["color"].append(cv2.cvtColor(color_img, cv2.COLOR_BGR2RGB))
+        else:
+            idx = self.frame_counter
+            ext = self.ext
+            params = self.imwrite_params
+            cv2.imwrite(str(self.episode_dir / f"left_{idx:06d}{ext}"), left_img, params)
+            cv2.imwrite(str(self.episode_dir / f"right_{idx:06d}{ext}"), right_img, params)
+            cv2.imwrite(str(self.episode_dir / f"color_{idx:06d}{ext}"), color_img, params)
+
         self.times_file.write(f"{timestamp:.6f}\n")
         self.timestamps.append(timestamp)
         self.frame_counter += 1
+
+        if self._mem_frames is not None and self.frame_counter % 30 == 0:
+            print(f"  Buffer: {self._mem_usage()} ({self.frame_counter} frames)", end="\r")
 
     def stop_episode(self):
         """Stop recording the current episode."""
@@ -411,10 +452,11 @@ class RecordingSession:
             print(f"Encoding episode {self.episode_count} to video...")
             encode_episode_to_video(
                 self.episode_dir, self.fps, vcodec=self.vcodec,
-                image_format=self.image_format,
+                image_format=self.image_format, mem_frames=self._mem_frames,
             )
 
         self.timestamps = []
+        self._mem_frames = None
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +583,12 @@ def main():
         default=False,
         help="Run without display; use terminal for r/s/q controls",
     )
+    parser.add_argument(
+        "--mem",
+        action="store_true",
+        default=False,
+        help="Buffer frames in memory with --encode-video instead of writing to disk first",
+    )
     args = parser.parse_args()
 
     # Setup RealSense pipeline
@@ -562,6 +610,7 @@ def main():
         vcodec=args.vcodec,
         image_format=args.image_format,
         fps=defaults["color_fps"],
+        mem=args.mem,
     )
     pipeline = rs.pipeline()
     config = rs.config()
