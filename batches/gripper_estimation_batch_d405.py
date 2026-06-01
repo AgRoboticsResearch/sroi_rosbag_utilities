@@ -68,38 +68,29 @@ def find_distances_max_min(distances, threshold=0.05, threshold_num=10):
     """Find valid max and min distances from the data."""
     distances_copy = copy.deepcopy(distances)
     ret_max_distance, ret_min_distance = None, None
-    # Max
-    while True:
-        valid_max = False
+    for _ in range(len(distances)):
         max_dist_id = np.argmax(distances)
         max_distance = distances[max_dist_id]
         data_in_range = distances[(distances > max_distance * (1 - threshold)) & (distances < max_distance * (1 + threshold))]
-        num_data_in_range = len(data_in_range)
-        if num_data_in_range < threshold_num:
-            pass
-        else:
-            valid_max = True
-        if not valid_max:
-            distances[max_dist_id] = -1
-        if valid_max:
+        if len(data_in_range) >= threshold_num:
             ret_max_distance = max_distance
             break
+        distances[max_dist_id] = -1
+    if ret_max_distance is None:
+        ret_max_distance = np.max(distances_copy)
+
     distances = distances_copy
-    while True:
-        valid_min = False
+    for _ in range(len(distances)):
         min_dist_id = np.argmin(distances)
         min_distance = distances[min_dist_id]
         data_in_range = distances[(distances > min_distance * (1 - threshold)) & (distances < min_distance * (1 + threshold))]
-        num_data_in_range = len(data_in_range)
-        if num_data_in_range < threshold_num:
-            pass
-        else:
-            valid_min = True
-        if not valid_min:
-            distances[min_dist_id] = np.inf
-        if valid_min:
+        if len(data_in_range) >= threshold_num:
             ret_min_distance = min_distance
             break
+        distances[min_dist_id] = np.inf
+    if ret_min_distance is None:
+        ret_min_distance = np.min(distances_copy)
+
     return ret_max_distance, ret_min_distance
 
 

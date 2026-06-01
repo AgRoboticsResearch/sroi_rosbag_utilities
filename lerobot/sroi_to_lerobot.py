@@ -11,17 +11,13 @@ Usage:
 """
 
 import argparse
-import json
 import logging
-import multiprocessing as mp
 import numpy as np
 import os
 import shutil
-import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from PIL import Image
-from typing import Dict, Any
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.rotation import Rotation
