@@ -1,0 +1,14 @@
+/oak:
+  camera_i_enable_imu: true
+  camera_i_nn_type: none
+  camera_i_pipeline_type: Depth
+  camera_i_usb_port_id: ''
+  camera_i_usb_speed: SUPER_PLUS
+  right_i_publish_topic: true
+  left_i_publish_topic: true
+  stereo_i_subpixel: true
+  stereo_i_extended_disp: false
+  left_i_resolution: '720P'
+  right_i_resolution: '720P'
+  stereo_i_publish_left_rect: false
+  setreo_i_publish_right_rect: false

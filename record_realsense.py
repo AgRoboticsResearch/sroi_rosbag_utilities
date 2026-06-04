@@ -57,18 +57,21 @@ Dependencies:
 import argparse
 import glob
 import json
-import yaml
 import select
 import shutil
 import sys
 import termios
 import time
 import tty
-from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 try:
     import pyrealsense2 as rs
@@ -166,6 +169,10 @@ def make_camera_info(intrinsics, width, height, baseline_tx=0.0):
 
 def save_orb_slam_yaml(camera_info_left, camera_info_right, output_path, camera_type):
     """Generate ORB-SLAM YAML from camera info dicts, reusing logic from create_orb_slam_yaml.py."""
+    if yaml is None:
+        print("  Warning: pyyaml not installed, skipping ORB-SLAM YAML generation.")
+        return
+
     template = Path(__file__).parent / "orb_slam_yaml"
     if camera_type == "realsense_d435i":
         tmpl_path = template / "RealSense_D435i.yaml"
@@ -186,12 +193,10 @@ def save_orb_slam_yaml(camera_info_left, camera_info_right, output_path, camera_
     except yaml.YAMLError:
         config = yaml.safe_load(content)
 
-    # D405 has fixed calibration — just copy template
     if camera_type == "realsense_d405":
         shutil.copy2(tmpl_path, output_path)
         return
 
-    # D435i: fill template from camera info
     left_K = np.array(camera_info_left["K"]).reshape(3, 3)
     left_P = np.array(camera_info_left["P"]).reshape(3, 4)
     right_P = np.array(camera_info_right["P"]).reshape(3, 4)
@@ -312,11 +317,9 @@ def encode_episode_to_video(episode_dir, fps, vcodec="libx264", crf=23, g=2,
                     for packet in out_stream.encode(frame):
                         output.mux(packet)
 
-            # Flush encoder
             for packet in out_stream.encode():
                 output.mux(packet)
 
-        # Delete images from disk (only for disk-based path)
         if not frames_rgb:
             for img_path in input_list:
                 Path(img_path).unlink()
@@ -347,7 +350,7 @@ class RecordingSession:
         self.episode_dir = None
         self.times_file = None
         self.timestamps = []
-        self._mem_frames = None  # {stream_name: [rgb_arrays]}
+        self._mem_frames = None
 
     @property
     def ext(self):
@@ -370,7 +373,6 @@ class RecordingSession:
         self.episode_dir = self.output_dir / f"episode_{self.episode_count:03d}"
         self.episode_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save camera info JSONs
         for info, name in [
             (camera_info_left, "camera_info_left.json"),
             (camera_info_right, "camera_info_right.json"),
@@ -379,7 +381,6 @@ class RecordingSession:
             with open(self.episode_dir / name, "w") as f:
                 json.dump(info, f, indent=2)
 
-        # Generate ORB-SLAM YAML from camera info (D405: fixed copy, D435i: filled from calibration)
         yaml_name = f"orb_slam_{self.camera_type}.yaml"
         save_orb_slam_yaml(
             camera_info_left, camera_info_right,
@@ -409,7 +410,6 @@ class RecordingSession:
             return
 
         if self._mem_frames is not None:
-            # Buffer RGB frames in memory (skip disk write entirely)
             self._mem_frames["left"].append(cv2.cvtColor(left_img, cv2.COLOR_GRAY2RGB))
             self._mem_frames["right"].append(cv2.cvtColor(right_img, cv2.COLOR_GRAY2RGB))
             self._mem_frames["color"].append(cv2.cvtColor(color_img, cv2.COLOR_BGR2RGB))
@@ -436,7 +436,6 @@ class RecordingSession:
 
         self.times_file.close()
 
-        # Save timestamps as JSON (LeRobot-compatible)
         ts_data = {
             "timestamps": self.timestamps,
             "from_timestamp": self.timestamps[0] if self.timestamps else None,
@@ -453,7 +452,6 @@ class RecordingSession:
             f"{self.frame_counter} frames saved to {self.episode_dir}"
         )
 
-        # Encode PNGs to MP4 if requested
         if self.encode_video:
             print(f"Encoding episode {self.episode_count} to video...")
             encode_episode_to_video(
@@ -472,30 +470,24 @@ def build_preview(color_img, left_img, right_img, session, fps):
     """Build the composite preview image with status overlay."""
     h, w = color_img.shape[:2]
 
-    # IR images are grayscale — resize to half height for side panel
     small_h = h // 2
     left_small = cv2.resize(left_img, (w // 2, small_h))
     right_small = cv2.resize(right_img, (w // 2, small_h))
 
-    # Convert grayscale IR to BGR so dimensions match color image
     if len(left_small.shape) == 2:
         left_small = cv2.cvtColor(left_small, cv2.COLOR_GRAY2BGR)
     if len(right_small.shape) == 2:
         right_small = cv2.cvtColor(right_small, cv2.COLOR_GRAY2BGR)
 
-    # Stack IR images vertically
     ir_panel = np.vstack([left_small, right_small])
-
-    # Stack color + IR side by side
     preview = np.hstack([color_img, ir_panel])
 
-    # Status overlay
     if session.is_recording:
         status = f"RECORDING episode {session.episode_count}"
-        color = (0, 0, 255)  # red
+        color = (0, 0, 255)
     else:
         status = "IDLE"
-        color = (0, 200, 0)  # green
+        color = (0, 200, 0)
 
     cv2.putText(preview, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
     cv2.putText(
@@ -528,7 +520,6 @@ def build_preview(color_img, left_img, right_img, session, fps):
             1,
         )
 
-    # Controls help
     cv2.putText(
         preview,
         "[r] record  [s] stop  [q] quit",
@@ -597,16 +588,13 @@ def main():
     )
     args = parser.parse_args()
 
-    # Setup RealSense pipeline
     defaults = CAMERA_DEFAULTS[args.camera]
 
-    # Determine folder postfix
     if args.encode_video:
         folder_format = "mp4"
     else:
         folder_format = args.image_format
 
-    # Create session directory with readable timestamp + format postfix
     session_timestamp = time.strftime("%Y%m%d_%H%M%S")
     session_dir = Path(args.output) / f"{session_timestamp}-{folder_format}"
     session = RecordingSession(
@@ -653,7 +641,6 @@ def main():
 
     pipeline_profile = pipeline.start(config)
 
-    # Disable IR emitter (removes laser dot pattern from IR images)
     device = pipeline_profile.get_device()
     for sensor in device.query_sensors():
         if sensor.supports(rs.option.emitter_enabled):
@@ -661,12 +648,10 @@ def main():
             print("IR emitter disabled (no laser dots in IR images)")
             break
 
-    # Get camera intrinsics and extrinsics
     ir_left_intrinsics = get_intrinsics(pipeline_profile, rs.stream.infrared, 1)
     ir_right_intrinsics = get_intrinsics(pipeline_profile, rs.stream.infrared, 2)
     color_intrinsics = get_intrinsics(pipeline_profile, rs.stream.color, 0)
 
-    # Get baseline from extrinsics (translation in meters)
     extrinsics = get_extrinsics(
         pipeline_profile,
         rs.stream.infrared, 2,
@@ -674,7 +659,6 @@ def main():
     )
     baseline_m = extrinsics.translation[0] if extrinsics else 0.0
 
-    # Build camera info dicts (ROS camera_info format)
     camera_info_left = make_camera_info(ir_left_intrinsics, defaults["ir_width"], defaults["ir_height"])
     camera_info_right = make_camera_info(
         ir_right_intrinsics, defaults["ir_width"], defaults["ir_height"],
@@ -687,7 +671,6 @@ def main():
     print()
     print("Controls: [r] record  [s] stop  [q] quit")
 
-    # Warm up — discard first few frames
     print("Warming up camera...")
     for i in range(30):
         try:
@@ -701,14 +684,12 @@ def main():
             return
     print("Camera ready.")
 
-    # Set up headless terminal if needed
     headless = args.headless
     old_term = None
     if headless and sys.stdin.isatty():
         old_term = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
 
-    # Main loop
     fps_counter = 0
     fps_timer = time.time()
     display_fps = 0.0
@@ -732,12 +713,10 @@ def main():
             ir_right_img = np.asanyarray(ir_right_frame.get_data())
             color_img = np.asanyarray(color_frame.get_data())
 
-            # Record if active
             if session.is_recording:
-                timestamp = frames.get_timestamp() / 1000.0  # ms -> seconds
+                timestamp = frames.get_timestamp() / 1000.0
                 session.save_frame(timestamp, ir_left_img, ir_right_img, color_img)
 
-            # FPS calculation
             fps_counter += 1
             elapsed = time.time() - fps_timer
             if elapsed >= 1.0:
@@ -747,9 +726,7 @@ def main():
                 if headless and session.is_recording:
                     print(f"\r  FPS: {display_fps:.0f}  Frame: {session.frame_counter}", end="", flush=True)
 
-            # Display / key handling
             if headless:
-                # Non-blocking terminal read
                 if select.select([sys.stdin], [], [], 0)[0]:
                     key = sys.stdin.read(1)
                 else:

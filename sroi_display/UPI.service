@@ -1,0 +1,13 @@
+[Unit]
+Description=UPI Python Script
+
+[Service]
+ExecStart=/usr/bin/python3 /home/brl/codes/raspberry_pi/upi_python/upi_info_display/main.py
+WorkingDirectory=/home/brl/codes/raspberry_pi/upi_python
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+# User=pi  # Uncomment this line if you want to run the script as a specific user
+
+[Install]
+WantedBy=multi-user.target
