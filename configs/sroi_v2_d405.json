@@ -1,0 +1,9 @@
+{
+    "description": "SROI v2 with Intel RealSense D405 camera",
+    "gripper_roi": 200,
+    "tag_family": "tag16h5",
+    "left_gripper_tag_id": 0,
+    "right_gripper_tag_id": 15,
+    "nominal_diag_distance": 42,
+    "threshold": 15
+}

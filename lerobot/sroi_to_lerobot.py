@@ -14,13 +14,10 @@ import argparse
 import logging
 import numpy as np
 import os
-import sys
+import shutil
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from PIL import Image
-from typing import Dict, Any
-
-# Add lerobot to path
-sys.path.insert(0, '/home/zfei/code/lerobot/src')
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.rotation import Rotation
@@ -53,12 +50,8 @@ def load_trajectory_data(traj_path: str):
     poses = np.concatenate((traj, append_row), axis=1)
     
     # Extract positions and orientations
-    positions = poses[:, :3, 3]  # Translation part
-    rotvecs = np.zeros((len(poses), 3))  # wx, wy, wz
-    
-    for i, pose in enumerate(poses):
-        rotation_matrix = pose[:3, :3]
-        rotvecs[i] = Rotation.from_matrix(rotation_matrix).as_rotvec()
+    positions = poses[:, :3, 3]
+    rotvecs = np.array([Rotation.from_matrix(p[:3, :3]).as_rotvec() for p in poses])
     
     return timestamps, poses, positions, rotvecs
 
@@ -77,24 +70,18 @@ def load_gripper_data(gripper_path: str):
     return gripper_distances
 
 
-def load_image(image_path: str) -> np.ndarray:
-    """
-    Load and process an image.
-    
-    Args:
-        image_path: Path to image file
-        
-    Returns:
-        image: Image array in CHW format (channels, height, width)
-    """
-    image = Image.open(image_path)
-    image = np.array(image)
-    
-    # Convert to CHW format (channels, height, width)
-    if len(image.shape) == 3:
-        image = image.transpose(2, 0, 1)
-    
-    return image
+def _load_image(path_str: str) -> np.ndarray:
+    """Load a single image from path string. Used by process pool workers."""
+    return np.array(Image.open(path_str))
+
+
+def load_images_parallel(image_files, num_workers: int) -> list[np.ndarray]:
+    """Load images in parallel using a process pool."""
+    paths = [str(f) for f in image_files]
+    if num_workers <= 1:
+        return [_load_image(p) for p in paths]
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        return list(executor.map(_load_image, paths, chunksize=max(1, len(paths) // (num_workers * 4))))
 
 
 def create_lerobot_dataset(
@@ -105,6 +92,7 @@ def create_lerobot_dataset(
     push_to_hub: bool = False,
     single_task: str = "End-effector manipulation task",
     episodes: str = "all",
+    num_workers: int = 4,
 ):
     """
     Convert SROI data to LeRobot dataset format.
@@ -148,31 +136,20 @@ def create_lerobot_dataset(
 
     # Process the first episode to determine image shape for features
     first_ep_path = episode_dirs[0]
-    sample_images = sorted(list(first_ep_path.glob("color_*.png")))
+    sample_images = sorted([*first_ep_path.glob("color_*.png"), *first_ep_path.glob("color_*.jpg")])
     if not sample_images:
         raise ValueError(f"No images found in {first_ep_path}")
-    sample_image = load_image(str(sample_images[0]))
-    image_shape = sample_image.shape
+    sample_image = np.array(Image.open(str(sample_images[0])))
+    h, w = sample_image.shape[:2]
 
     # Define dataset features
+    # observation.state is omitted — it's derived from the action column
+    # during training via DeriveStateFromActionStep (Pattern B).
     features = {
         "observation.images.camera": {
             "dtype": "video",
-            "shape": image_shape,  # (channels, height, width)
-            "names": ["channels", "height", "width"],
-        },
-        "observation.state": {
-            "dtype": "float32",
-            "names": [
-                "ee.x",
-                "ee.y",
-                "ee.z",
-                "ee.wx",
-                "ee.wy",
-                "ee.wz",
-                "ee.gripper_pos"
-            ],
-            "shape": (7,)
+            "shape": (h, w, 3),
+            "names": ["height", "width", "channels"],
         },
         "action": {
             "dtype": "float32",
@@ -229,7 +206,7 @@ def create_lerobot_dataset(
         print(f"Episode length: {min_length} frames")
 
         # Check for image files
-        image_files = sorted(list(ep_path.glob("color_*.png")))
+        image_files = sorted([*ep_path.glob("color_*.png"), *ep_path.glob("color_*.jpg")])
         if len(image_files) < min_length:
             print(f"Warning: Only {len(image_files)} images found, but {min_length} frames needed")
             min_length = min(min_length, len(image_files))
@@ -239,23 +216,15 @@ def create_lerobot_dataset(
             rotvecs = rotvecs[:min_length]
             gripper_distances = gripper_distances[:min_length]
 
+        print(f"Loading {min_length} images with {num_workers} worker(s)...")
+
+        images = load_images_parallel(image_files[:min_length], num_workers)
+
         print("Adding frames to dataset...")
 
         # Add frames to dataset
         for i in range(min_length):
-            # Load image
-            image = load_image(str(image_files[i]))
-
-            # Current state
-            state = np.array([
-                positions[i, 0],  # x
-                positions[i, 1],  # y
-                positions[i, 2],  # z
-                rotvecs[i, 0],    # wx
-                rotvecs[i, 1],    # wy
-                rotvecs[i, 2],    # wz
-                gripper_distances[i],  # gripper_pos
-            ], dtype=np.float32)
+            image = images[i]
 
             # Action (next state)
             # For the last frame, we repeat the last state
@@ -273,7 +242,6 @@ def create_lerobot_dataset(
             # Build frame
             frame = {
                 "observation.images.camera": image,
-                "observation.state": state,
                 "action": action,
                 "task": single_task,
             }
@@ -287,8 +255,19 @@ def create_lerobot_dataset(
         dataset.save_episode()
         print(f"Episode {ep_path.name} saved")
 
+        # Copy camera info files per session
+        camera_info_files = sorted(ep_path.glob("camera_info_*.json"))
+        if camera_info_files:
+            cam_dir = dataset.root / "meta" / "camera_info" / ep_path.name
+            cam_dir.mkdir(parents=True, exist_ok=True)
+            for cif in camera_info_files:
+                shutil.copy2(cif, cam_dir / cif.name)
+            print(f"Copied {len(camera_info_files)} camera info file(s) to {cam_dir}")
+
     print(f"\nDataset created with {dataset.num_episodes} episode(s)")
     print(f"Dataset features: {list(dataset.features.keys())}")
+
+    dataset.finalize()
 
     # Push to hub if requested
     if push_to_hub:
@@ -342,6 +321,12 @@ def main():
         default="all",
         help="Comma-separated list of episode subdirectory names to convert, or 'all' (default: all)"
     )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of parallel workers for image loading (default: 4, use 1 for sequential)"
+    )
 
     args = parser.parse_args()
     
@@ -360,7 +345,8 @@ def main():
         root=args.root,
         push_to_hub=args.push_to_hub,
         single_task=args.task,
-        episodes=args.episodes
+        episodes=args.episodes,
+        num_workers=args.num_workers,
     )
     
     print("Conversion completed successfully!")
