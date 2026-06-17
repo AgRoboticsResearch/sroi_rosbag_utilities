@@ -225,7 +225,33 @@ def write_csv(session_data: dict[str, list[EpisodeQC]], output: Path) -> None:
 # PDF output
 # ============================================================================
 
-def _plot_episode(axes, e: EpisodeQC):
+def _compute_traj_extent(session_data: dict[str, list[EpisodeQC]]) -> tuple[float, float, float, float] | None:
+    """Global (x_min, x_max, y_min, y_max) in cm across every episode trajectory.
+
+    Trajectories are shifted to start at origin (matching _plot_episode), so the
+    extent always includes 0. Returns None if no episode has a usable trajectory.
+    """
+    x_min = x_max = y_min = y_max = 0.0
+    found = False
+    for eps in session_data.values():
+        for e in eps:
+            if e.pos is None or len(e.pos) < 2:
+                continue
+            xy = e.pos[:, :2] - e.pos[0, :2]
+            x_min = min(x_min, float(xy[:, 0].min()) * 100)
+            x_max = max(x_max, float(xy[:, 0].max()) * 100)
+            y_min = min(y_min, float(xy[:, 1].min()) * 100)
+            y_max = max(y_max, float(xy[:, 1].max()) * 100)
+            found = True
+    if not found:
+        return None
+    # 5% padding, at least 5 mm so static (point) trajectories aren't edge-kissing
+    pad_x = max(0.5, (x_max - x_min) * 0.05)
+    pad_y = max(0.5, (y_max - y_min) * 0.05)
+    return (x_min - pad_x, x_max + pad_x, y_min - pad_y, y_max + pad_y)
+
+
+def _plot_episode(axes, e: EpisodeQC, extent: tuple[float, float, float, float] | None = None):
     ax_traj, ax_grip = axes
     cat_color = CATEGORY_COLORS.get(e.category, "#999")
 
@@ -239,7 +265,13 @@ def _plot_episode(axes, e: EpisodeQC):
         ax_traj.plot(xy[:, 0] * 100, xy[:, 1] * 100, "-", linewidth=1.2, color=TRAJ_COLOR)
         ax_traj.scatter([xy[0, 0] * 100], [xy[0, 1] * 100], c="green", s=25, zorder=3)
         ax_traj.scatter([xy[-1, 0] * 100], [xy[-1, 1] * 100], c="red", s=25, zorder=3, marker="x")
-        ax_traj.set_aspect("equal", adjustable="datalim")
+        if extent is not None:
+            # Shared scale across the whole PDF — fixed limits, box adjusts to keep aspect equal
+            ax_traj.set_xlim(extent[0], extent[1])
+            ax_traj.set_ylim(extent[2], extent[3])
+            ax_traj.set_aspect("equal", adjustable="box")
+        else:
+            ax_traj.set_aspect("equal", adjustable="datalim")
     else:
         ax_traj.text(0.5, 0.5, "no traj", ha="center", va="center",
                      transform=ax_traj.transAxes, fontsize=9)
@@ -316,7 +348,8 @@ def _render_summary_page(pdf: PdfPages, session_data: dict[str, list[EpisodeQC]]
     plt.close(fig)
 
 
-def _render_session_page(pdf: PdfPages, session_name: str, episodes: list[EpisodeQC]):
+def _render_session_page(pdf: PdfPages, session_name: str, episodes: list[EpisodeQC],
+                         extent: tuple[float, float, float, float] | None = None):
     from matplotlib import gridspec
 
     episodes = sorted(episodes, key=lambda e: (CATEGORY_SORT_ORDER.get(e.category, 9),
@@ -349,7 +382,7 @@ def _render_session_page(pdf: PdfPages, session_name: str, episodes: list[Episod
         )
         ax_traj = fig.add_subplot(inner[0, 0])
         ax_grip = fig.add_subplot(inner[0, 1])
-        _plot_episode((ax_traj, ax_grip), e)
+        _plot_episode((ax_traj, ax_grip), e, extent=extent)
 
     # Hide unused cells
     for i in range(n, nrows * ncols):
@@ -362,8 +395,13 @@ def _render_session_page(pdf: PdfPages, session_name: str, episodes: list[Episod
 
 
 def render_pdf(session_data: dict[str, list[EpisodeQC]], output: Path) -> None:
-    """Render multi-page PDF: summary + one page per session."""
+    """Render multi-page PDF: summary + one page per session.
+
+    All trajectory plots share one xy extent (computed across every episode in
+    session_data) so motion is visually comparable across pages.
+    """
     output.parent.mkdir(parents=True, exist_ok=True)
+    extent = _compute_traj_extent(session_data)
     with PdfPages(output) as pdf:
         _render_summary_page(pdf, session_data)
         # Sessions with most problems first
@@ -371,7 +409,7 @@ def render_pdf(session_data: dict[str, list[EpisodeQC]], output: Path) -> None:
             eps = item[1]
             return sum(1 for e in eps if e.category in PROBLEM_CATEGORIES)
         for name, eps in sorted(session_data.items(), key=lambda kv: (-issue_score(kv), kv[0])):
-            _render_session_page(pdf, name, eps)
+            _render_session_page(pdf, name, eps, extent=extent)
 
 
 # ============================================================================
