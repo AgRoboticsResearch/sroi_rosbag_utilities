@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import csv
 import logging
 import numpy as np
 import os
@@ -21,6 +22,127 @@ from PIL import Image
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.rotation import Rotation
+
+
+def _load_qc_csv(qc_csv: str | Path) -> dict[str, dict[str, str]]:
+    """Read qc.csv into {session_name: {episode_name: category}}.
+
+    qc.csv columns (output of visualization/qc.py): session, episode, category, ...
+    """
+    qc_path = Path(qc_csv)
+    if not qc_path.exists():
+        raise FileNotFoundError(f"QC CSV not found: {qc_path}")
+    out: dict[str, dict[str, str]] = {}
+    with qc_path.open(newline="") as f:
+        for row in csv.DictReader(f):
+            out.setdefault(row["session"], {})[row["episode"]] = row["category"]
+    return out
+
+
+def _collect_episodes(
+    data_path: Path,
+    qc_csv: str | Path | None,
+    qc_categories: str,
+    episodes: str,
+) -> tuple[list[tuple[str, Path]], bool]:
+    """Auto-detect single-episode / single-session / multi-session mode and return
+    the work list.
+
+    Returns (candidates, is_multi_session) where candidates is a list of
+    (session_name, episode_dir) tuples in deterministic sorted order. QC filter
+    is applied per-session when qc_csv is provided.
+    """
+    if qc_csv is not None and episodes != "all":
+        raise ValueError("--qc_csv and --episodes are mutually exclusive.")
+
+    # Mode 1: single episode directory (backward compat)
+    if (data_path / "CameraTrajectoryTransformed.txt").exists():
+        if qc_csv is not None:
+            print(f"Warning: --qc_csv ignored; {data_path.name} is a single episode.")
+        return [(data_path.parent.name, data_path)], False
+
+    qc_data = _load_qc_csv(qc_csv) if qc_csv else None
+    keep = {c.strip() for c in qc_categories.split(",") if c.strip()} if qc_csv else None
+
+    # Mode 2: single session (episode_* dirs directly under data_path)
+    direct = sorted([d for d in data_path.iterdir() if _is_episode_dir(d)])
+    if direct:
+        kept = _apply_session_filter(data_path.name, direct, qc_data, keep, episodes)
+        return [(data_path.name, ep) for ep in kept], False
+
+    # Mode 3: multi-session (subdirs each containing decoded episode_* folders).
+    # A recording root can contain both *-mp4 and *-png siblings. Only decoded
+    # PNG/JPEG episode folders are convertible; MP4 sessions are ignored here.
+    session_dirs = sorted([d for d in data_path.iterdir() if _is_session_dir(d)])
+    if episodes != "all":
+        raise ValueError(
+            "--episodes is ambiguous in multi-session mode. Drop --episodes to convert all "
+            "qualifying episodes across sessions, or point --data_path at a specific session."
+        )
+    candidates: list[tuple[str, Path]] = []
+    for s in session_dirs:
+        eps = sorted([d for d in s.iterdir() if d.is_dir() and d.name.startswith("episode_")])
+        if not eps:
+            continue
+        kept = _apply_session_filter(s.name, eps, qc_data, keep, "all")
+        for ep in kept:
+            candidates.append((s.name, ep))
+
+    if not candidates:
+        raise ValueError(
+            f"No episode_* directories found in {data_path} or its subdirectories. "
+            f"Expected --data_path to point at an episode dir, a session dir, or a parent of session dirs."
+        )
+    return candidates, True
+
+
+def _is_episode_dir(path: Path) -> bool:
+    return path.is_dir() and path.name.startswith("episode_")
+
+
+def _is_convertible_episode(path: Path) -> bool:
+    if not _is_episode_dir(path):
+        return False
+    has_pose = (path / "CameraTrajectoryTransformed.txt").exists()
+    has_gripper = (path / "gripper_distances.txt").exists()
+    has_image = any(path.glob("color_*.png")) or any(path.glob("color_*.jpg"))
+    return has_pose and has_gripper and has_image
+
+
+def _is_session_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    return any(_is_convertible_episode(ep) for ep in path.glob("episode_*"))
+
+
+def _apply_session_filter(
+    session_name: str,
+    episode_dirs: list[Path],
+    qc_data: dict[str, dict[str, str]] | None,
+    keep: set[str] | None,
+    episodes: str,
+) -> list[Path]:
+    """Filter a single session's episode_dirs by QC categories or explicit --episodes list."""
+    if qc_data is not None:
+        if keep is None:
+            raise ValueError("keep_categories must be set when qc_data is provided")
+        if session_name not in qc_data:
+            raise ValueError(
+                f"Session {session_name!r} not found in qc.csv "
+                f"(sessions present: {sorted(qc_data)[:3]}...)."
+            )
+        sess_qc = qc_data[session_name]
+        kept = [ep for ep in episode_dirs if sess_qc.get(ep.name) in keep]
+        print(f"QC filter {session_name}: kept {len(kept)}/{len(episode_dirs)} (categories={sorted(keep)})")
+        return kept
+    if episodes != "all":
+        wanted = {e.strip() for e in episodes.split(",")}
+        kept = [ep for ep in episode_dirs if ep.name in wanted]
+        missing = wanted - {ep.name for ep in episode_dirs}
+        if missing:
+            raise ValueError(f"Episodes not found in {session_name}: {sorted(missing)}")
+        return kept
+    return episode_dirs
 
 
 def load_trajectory_data(traj_path: str):
@@ -85,57 +207,46 @@ def load_images_parallel(image_files, num_workers: int) -> list[np.ndarray]:
 
 
 def create_lerobot_dataset(
-    data_path: str,
+    data_path: str | Path,
     repo_id: str,
     fps: int = 30,
-    root: str = None,
+    root: str | None = None,
     push_to_hub: bool = False,
     single_task: str = "End-effector manipulation task",
     episodes: str = "all",
     num_workers: int = 4,
+    qc_csv: str | None = None,
+    qc_categories: str = "ok",
 ):
     """
     Convert SROI data to LeRobot dataset format.
 
     Args:
-        data_path: Path to SROI data directory (parent of episode directories)
+        data_path: Path to one of:
+            - a single episode directory (has CameraTrajectoryTransformed.txt)
+            - a single session directory (contains episode_* subdirs)
+            - a parent of session directories (contains *-png/episode_* trees)
         repo_id: Repository ID for the dataset
         fps: Frames per second
-        root: Root directory for dataset storage
+        root: Root directory for dataset storage (must not exist; converter creates it)
         push_to_hub: Whether to push to Hugging Face Hub
         single_task: Task description
-        episodes: Comma-separated list of episode subdirectory names, or "all"
+        episodes: Comma-separated episode names (single-session mode only);
+            "all" converts every episode. Mutually exclusive with --qc_csv.
+            Ambiguous in multi-session mode (use --qc_csv instead).
+        num_workers: Parallel workers for image loading
+        qc_csv: Optional path to a qc.csv from visualization/qc.py. Episodes are
+            filtered per session to those whose category is in qc_categories.
+        qc_categories: Comma-separated category names to keep when qc_csv is set
+            (default: "ok"). E.g. "ok,flat_gripper" to also keep no-actuation runs.
     """
     data_path = Path(data_path)
-
-    # Check if data_path is a single episode directory (backward compatibility)
-    single_episode_files = [
-        data_path / "CameraTrajectoryTransformed.txt",
-        data_path / "gripper_distances.txt",
-    ]
-    if all(f.exists() for f in single_episode_files):
-        # Treat as single episode (backward compatible)
-        episode_dirs = [data_path]
-        print(f"Processing single episode: {data_path.name}")
-    else:
-        # Find episode directories
-        if episodes == "all":
-            episode_dirs = sorted([d for d in data_path.iterdir() if d.is_dir()])
-        else:
-            episode_names = [e.strip() for e in episodes.split(",")]
-            episode_dirs = [data_path / e for e in episode_names]
-            # Validate all requested episodes exist
-            for ep_dir in episode_dirs:
-                if not ep_dir.is_dir():
-                    raise ValueError(f"Episode directory not found: {ep_dir}")
-
-        if not episode_dirs:
-            raise ValueError(f"No episode directories found in {data_path}")
-
-        print(f"Processing {len(episode_dirs)} episode(s): {[d.name for d in episode_dirs]}")
+    candidates, is_multi_session = _collect_episodes(data_path, qc_csv, qc_categories, episodes)
+    mode = "multi-session" if is_multi_session else "single-session/episode"
+    print(f"Mode: {mode}, {len(candidates)} episode(s) to convert")
 
     # Process the first episode to determine image shape for features
-    first_ep_path = episode_dirs[0]
+    first_ep_path = candidates[0][1]
     sample_images = sorted([*first_ep_path.glob("color_*.png"), *first_ep_path.glob("color_*.jpg")])
     if not sample_images:
         raise ValueError(f"No images found in {first_ep_path}")
@@ -179,20 +290,21 @@ def create_lerobot_dataset(
     )
 
     # Process each episode
-    for ep_idx, ep_path in enumerate(episode_dirs):
-        print(f"\n--- Processing episode {ep_idx + 1}/{len(episode_dirs)}: {ep_path.name} ---")
+    for ep_idx, (session_name, ep_path) in enumerate(candidates):
+        label = f"{session_name}/{ep_path.name}" if is_multi_session else ep_path.name
+        print(f"\n--- Processing episode {ep_idx + 1}/{len(candidates)}: {label} ---")
 
         # Load trajectory data
         traj_path = ep_path / "CameraTrajectoryTransformed.txt"
         if not traj_path.exists():
-            print(f"Warning: Skipping {ep_path.name} - no trajectory file found")
+            print(f"Warning: Skipping {label} - no trajectory file found")
             continue
         timestamps, poses, positions, rotvecs = load_trajectory_data(str(traj_path))
 
         # Load gripper data
         gripper_path = ep_path / "gripper_distances.txt"
         if not gripper_path.exists():
-            print(f"Warning: Skipping {ep_path.name} - no gripper file found")
+            print(f"Warning: Skipping {label} - no gripper file found")
             continue
         gripper_distances = load_gripper_data(str(gripper_path))
 
@@ -253,12 +365,14 @@ def create_lerobot_dataset(
 
         # Save episode
         dataset.save_episode()
-        print(f"Episode {ep_path.name} saved")
+        print(f"Episode {label} saved")
 
-        # Copy camera info files per session
+        # Copy camera info files. Namespace by session in multi-session mode so
+        # episode_001 from session A doesn't clobber episode_001 from session B.
         camera_info_files = sorted(ep_path.glob("camera_info_*.json"))
         if camera_info_files:
-            cam_dir = dataset.root / "meta" / "camera_info" / ep_path.name
+            cam_key = f"{session_name}__{ep_path.name}" if is_multi_session else ep_path.name
+            cam_dir = dataset.root / "meta" / "camera_info" / cam_key
             cam_dir.mkdir(parents=True, exist_ok=True)
             for cif in camera_info_files:
                 shutil.copy2(cif, cam_dir / cif.name)
@@ -284,7 +398,8 @@ def main():
         "--data_path",
         type=str,
         required=True,
-        help="Path to SROI data directory (parent of episode directories, or a single episode directory)"
+        help="Path to SROI data: a single episode dir, a session dir (containing episode_*), "
+             "or a parent of session dirs (multi-session mode — all sessions get unified into one dataset)."
     )
     parser.add_argument(
         "--repo_id", 
@@ -327,16 +442,30 @@ def main():
         default=4,
         help="Number of parallel workers for image loading (default: 4, use 1 for sequential)"
     )
+    parser.add_argument(
+        "--qc_csv",
+        type=str,
+        default=None,
+        help="Path to a qc.csv from visualization/qc.py. Filters episodes by category for each "
+             "session under --data_path. Mutually exclusive with --episodes."
+    )
+    parser.add_argument(
+        "--qc_categories",
+        type=str,
+        default="ok",
+        help="Comma-separated QC categories to keep when --qc_csv is set (default: 'ok'). "
+             "Example: 'ok,flat_gripper'."
+    )
 
     args = parser.parse_args()
-    
+
     # Configure logging
     logging.basicConfig(level=logging.INFO)
-    
+
     # Validate data path
     if not os.path.exists(args.data_path):
         raise ValueError(f"Data path does not exist: {args.data_path}")
-    
+
     # Create dataset
     dataset = create_lerobot_dataset(
         data_path=args.data_path,
@@ -347,6 +476,8 @@ def main():
         single_task=args.task,
         episodes=args.episodes,
         num_workers=args.num_workers,
+        qc_csv=args.qc_csv,
+        qc_categories=args.qc_categories,
     )
     
     print("Conversion completed successfully!")

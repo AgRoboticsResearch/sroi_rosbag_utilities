@@ -24,6 +24,7 @@ import glob
 import copy
 from pupil_apriltags import Detector
 from tqdm import tqdm
+from scipy.signal import medfilt
 
 import numpy as np
 
@@ -116,12 +117,33 @@ def save_gripper_distance_plot(gripper_distances_normalized, output_path):
     plt.close()
 
 
-def process_folder(data_folder: Path, at_detector, args) -> dict:
-    """
-    Process a single folder to estimate gripper distances.
+def save_gripper_range_plot(pooled_raw_distances, min_distance, max_distance, output_path):
+    """Save a histogram of raw (pre-normalization) gripper distances for the whole
+    batch processed in this run, with the selected min/max marked."""
+    plt.figure(figsize=(10, 6))
+    plt.hist(pooled_raw_distances, bins=100, color='steelblue', alpha=0.8)
+    plt.axvline(min_distance, color='red', linestyle='--', linewidth=1.5,
+                label=f'min = {min_distance:.2f}')
+    plt.axvline(max_distance, color='green', linestyle='--', linewidth=1.5,
+                label=f'max = {max_distance:.2f}')
+    plt.xlabel('Raw Gripper Distance (px)')
+    plt.ylabel('Frame Count')
+    plt.title(f'Gripper Distance Distribution ({len(pooled_raw_distances)} frames)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
 
-    Returns:
-        Dictionary with processing results
+    plt.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print("Saved gripper distance distribution plot to", output_path)
+
+
+def detect_folder(data_folder: Path, at_detector, args) -> dict:
+    """
+    Run AprilTag detection for a single folder and forward-fill gaps.
+
+    Returns a dict with "status", "frame_count", "valid_detections", and
+    (on success) "raw_distances" (np.array of raw, unnormalized pixel distances).
     """
     result = {
         "folder": str(data_folder),
@@ -170,44 +192,44 @@ def process_folder(data_folder: Path, at_detector, args) -> dict:
             result["error"] = "No valid AprilTag detections"
             return result
 
-        max_gripper_distance = max(gripper_distance_valid)
-        min_gripper_distance = min(gripper_distance_valid)
+        # Fill gaps: leading missing frames take the first valid detection
+        # (nearest-in-time), interior/trailing gaps forward-fill from the
+        # previous frame. Seeding the head with the episode max (old behavior)
+        # amplified a single spurious detection into a long constant run that
+        # defeated both the median filter and the clustered-extremum check.
+        first_valid = gripper_distance_valid[0]
+        gripper_distances_processed = []
+        prev = first_valid
+        for x in gripper_distances:
+            if x is None:
+                gripper_distances_processed.append(prev)
+            else:
+                gripper_distances_processed.append(x)
+                prev = x
 
-        gripper_distances_processed = copy.copy(gripper_distances)
-        for idx, gripper_distance in enumerate(gripper_distances_processed):
-            if idx == 0:
-                if gripper_distance is None:
-                    gripper_distances_processed[idx] = max_gripper_distance
-            elif gripper_distance is None:
-                gripper_distances_processed[idx] = gripper_distances_processed[idx - 1]
-
-        gripper_distances_normalized = np.asarray(gripper_distances_processed)
-
-        filtered_max_distance, filtered_min_distance = find_distances_max_min(
-            gripper_distances_normalized, threshold=0.05, threshold_num=10
-        )
-
-        gripper_distances_normalized = (gripper_distances_normalized - filtered_min_distance) / (
-            filtered_max_distance - filtered_min_distance
-        )
-        gripper_distances_normalized[gripper_distances_normalized > 1] = 1
-        gripper_distances_normalized[gripper_distances_normalized < 0] = 0
-
-        # Save results
-        np.savetxt(output_file, gripper_distances_normalized)
-
-        # Save plot
-        plot_path = data_folder / "gripper_distances.jpg"
-        save_gripper_distance_plot(gripper_distances_normalized, plot_path)
-
-        result["max_distance"] = max_gripper_distance
-        result["min_distance"] = min_gripper_distance
+        raw = np.asarray(gripper_distances_processed, dtype=float)
+        if args.median_filter > 1:
+            raw = medfilt(raw, kernel_size=args.median_filter)
+        result["raw_distances"] = raw
 
     except Exception as e:
         result["status"] = "error"
         result["error"] = str(e)
 
     return result
+
+
+def normalize_and_save_folder(data_folder: Path, raw_distances, min_distance, max_distance) -> None:
+    """Scale raw distances to [0, 1] with a shared min/max and write outputs."""
+    gripper_distances_normalized = (raw_distances - min_distance) / (max_distance - min_distance)
+    gripper_distances_normalized[gripper_distances_normalized > 1] = 1
+    gripper_distances_normalized[gripper_distances_normalized < 0] = 0
+
+    output_file = data_folder / "gripper_distances.txt"
+    np.savetxt(output_file, gripper_distances_normalized)
+
+    plot_path = data_folder / "gripper_distances.jpg"
+    save_gripper_distance_plot(gripper_distances_normalized, plot_path)
 
 
 def find_data_folders(input_dir: Path) -> list:
@@ -247,13 +269,38 @@ Examples:
     parser.add_argument("--threshold", type=int, default=15, help="Threshold for tag validation (default: 15)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed detection info")
     parser.add_argument("--log", help="Path to save processing log as JSON")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Optional JSON file with manual 'gripper_min_distance'/'gripper_max_distance' "
+             "overrides (both required to take effect). Skips auto-detection of the range.",
+    )
+    parser.add_argument(
+        "--median-filter",
+        type=int,
+        default=1,
+        help="Median filter window size applied to raw gripper distances before "
+             "computing min/max and normalizing, to smooth AprilTag detection noise "
+             "(must be odd, e.g. 3; default 1 = no filtering)",
+    )
 
     args = parser.parse_args()
+    if args.median_filter < 1 or args.median_filter % 2 == 0:
+        parser.error("--median-filter must be an odd number >= 1")
 
     input_dir = Path(args.input)
     if not input_dir.exists():
         print(f"Error: Input directory does not exist: {input_dir}")
         sys.exit(1)
+
+    manual_min = manual_max = None
+    if args.config:
+        import json
+        with open(args.config) as f:
+            range_cfg = json.load(f)
+        manual_min = range_cfg.get("gripper_min_distance")
+        manual_max = range_cfg.get("gripper_max_distance")
 
     # Find data folders
     data_folders = find_data_folders(input_dir)
@@ -274,28 +321,54 @@ Examples:
         debug=0
     )
 
-    # Process all folders
+    # Phase 1: detect raw distances for every folder
     all_results = []
     start_time = datetime.now()
 
-    for folder in tqdm(data_folders, desc="Processing folders"):
+    for folder in tqdm(data_folders, desc="Detecting folders"):
         print(f"\n{folder.name}:")
-        result = process_folder(folder, at_detector, args)
+        result = detect_folder(folder, at_detector, args)
         all_results.append(result)
 
         if result["status"] == "success":
-            print(f"  Done: {result['frame_count']} frames, {result['valid_detections']} valid detections")
+            print(f"  Detected: {result['frame_count']} frames, {result['valid_detections']} valid detections")
         elif result["status"] == "skipped":
             print(f"  Skipped: {result.get('error', '')}")
         else:
             print(f"  Error: {result.get('error', '')}")
 
+    # Phase 2: normalize with one shared min/max (manual override, else pooled
+    # clustered-extremum over every successfully-detected folder in this run)
+    detected = [r for r in all_results if r["status"] == "success"]
+    pooled = np.concatenate([r["raw_distances"] for r in detected]) if detected else None
+    if manual_min is not None and manual_max is not None:
+        min_distance, max_distance = manual_min, manual_max
+        print(f"\nUsing manual gripper range from {args.config}: min={min_distance}, max={max_distance}")
+    elif detected:
+        max_distance, min_distance = find_distances_max_min(pooled, threshold=0.05, threshold_num=10)
+        print(
+            f"\nComputed gripper range from {len(detected)} folder(s): "
+            f"min={min_distance}, max={max_distance}"
+        )
+    else:
+        min_distance = max_distance = None
+
+    if min_distance is not None:
+        dist_plot_path = input_dir / "gripper_distance_distribution.png"
+        save_gripper_range_plot(pooled, min_distance, max_distance, dist_plot_path)
+
+        for result in detected:
+            folder = Path(result["folder"])
+            normalize_and_save_folder(folder, result.pop("raw_distances"), min_distance, max_distance)
+            result["min_distance"] = min_distance
+            result["max_distance"] = max_distance
+
     # Summary
     elapsed = (datetime.now() - start_time).total_seconds()
-    success_count = sum(1 for r in all_results if r["status"] == "success")
+    success_count = len(detected)
     skipped_count = sum(1 for r in all_results if r["status"] == "skipped")
     error_count = sum(1 for r in all_results if r["status"] == "error")
-    total_frames = sum(r.get("frame_count", 0) for r in all_results if r["status"] == "success")
+    total_frames = sum(r.get("frame_count", 0) for r in detected)
 
     print(f"\n{'=' * 60}")
     print(f"Summary:")

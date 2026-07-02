@@ -23,11 +23,25 @@ CLI usage:
     # Glob for sessions with a different pattern
     python visualization/qc.py /path/to/data -p '*-jpeg'
 
+    # Override thresholds / colors / layout from a custom JSON
+    python visualization/qc.py /path/to/data --filters /path/to/qc_filters.json
+
+Config:
+    All thresholds, category metadata, colors, and page layout live in
+    configs/qc_filters.json (next to this script). Edit that file to tune
+    behavior; pass --filters <path> to swap in a different config per run.
+    The JSON is auto-loaded at import time, so importers don't need an
+    explicit load_filters() call unless they want to override the path.
+
 API usage:
     from visualization.qc import scan_sessions, write_csv, render_pdf
     sessions = scan_sessions(Path("/path/to/data"))
     write_csv(sessions, Path("qc.csv"))
     render_pdf(sessions, Path("qc.pdf"))
+
+    # Override filters programmatically:
+    from visualization.qc import load_filters
+    load_filters(Path("/path/to/custom.json"))  # before scan_sessions
 
 Categories (per episode):
     ok                 - non-static motion + valid gripper signal
@@ -42,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -55,33 +70,95 @@ import numpy as np
 
 
 # ============================================================================
-# Data classes
+# Config — all tunable values live in configs/qc_filters.json
 # ============================================================================
 
-CATEGORY_COLORS = {
-    "ok": "#2e7d32",           # green
-    "static": "#c62828",       # red
-    "flat_gripper": "#ef6c00", # orange
-    "no_gripper": "#757575",   # gray
-    "no_traj": "#757575",      # gray
-    "all_nan_gripper": "#c62828",
-}
+DEFAULT_FILTERS_PATH = Path(__file__).resolve().parent.parent / "configs" / "qc_filters.json"
 
-# Distinct colors for the two plots WITHIN an episode panel
-TRAJ_COLOR = "#1565c0"   # dark blue
-GRIP_COLOR = "#e65100"   # dark orange
+# Module-level config vars. Populated by load_filters() below; read by the rest
+# of the module. Names mirror the old hardcoded constants so existing call sites
+# and importers (scan_sessions, classify, render_pdf) work unchanged.
+STATIC_PATH_M: float = 0.0
+FLAT_GRIPPER_STD: float = 0.0
+MIN_TRAJ_FRAMES: int = 2
+EXTENT_PADDING_RATIO: float = 0.05
+EXTENT_PADDING_MIN_CM: float = 0.5
+CATEGORY_COLORS: dict[str, str] = {}
+CATEGORY_DEFAULT_COLOR: str = "#999999"
+PROBLEM_CATEGORIES: set[str] = set()
+CATEGORY_SORT_ORDER: dict[str, int] = {}
+TRAJ_COLOR: str = ""
+GRIP_COLOR: str = ""
+PANEL_BG: str = ""
+GRIPPER_YLIM: tuple[float, float] = (-0.05, 1.05)
+EPISODES_PER_ROW: int = 3
+FIGSIZE_SESSION: tuple[float, float] = (11.0, 2.4)
+FIGSIZE_SUMMARY: tuple[float, float] = (11.0, 0.4)
+FIGSIZE_SUMMARY_BASE_HEIGHT: float = 1.5
+OUTER_HSPACE: float = 0.55
+OUTER_WSPACE: float = 0.30
+INNER_WSPACE: float = 0.30
+OUTER_MARGINS: tuple[float, float, float, float] = (0.04, 0.98, 0.95, 0.04)
 
-# Background tint for each episode panel (grouping cue)
-PANEL_BG = "#f5f7fa"     # very light blue-gray
 
-# Categories considered "bad" — episodes with these get sorted to the top of pages
-PROBLEM_CATEGORIES = {"no_traj", "all_nan_gripper", "no_gripper", "static", "flat_gripper"}
-CATEGORY_SORT_ORDER = {"no_traj": 0, "all_nan_gripper": 1, "no_gripper": 2,
-                        "static": 3, "flat_gripper": 4, "ok": 5}
+def load_filters(path: Path | None = None) -> None:
+    """Load QC filter rules from JSON into module-level config vars.
 
-# Thresholds — exposed as module-level so callers can tune
-STATIC_PATH_M = 0.01           # < 1 cm = static
-FLAT_GRIPPER_STD = 0.05        # gripper std below this = no actuation
+    Uses DEFAULT_FILTERS_PATH (configs/qc_filters.json next to this script) when
+    path is None. Reassigns STATIC_PATH_M, CATEGORY_COLORS, etc. so the rest of
+    the module picks up the new values on the next call.
+    """
+    global STATIC_PATH_M, FLAT_GRIPPER_STD, MIN_TRAJ_FRAMES
+    global EXTENT_PADDING_RATIO, EXTENT_PADDING_MIN_CM
+    global CATEGORY_COLORS, CATEGORY_DEFAULT_COLOR, PROBLEM_CATEGORIES, CATEGORY_SORT_ORDER
+    global TRAJ_COLOR, GRIP_COLOR, PANEL_BG, GRIPPER_YLIM
+    global EPISODES_PER_ROW, FIGSIZE_SESSION, FIGSIZE_SUMMARY, FIGSIZE_SUMMARY_BASE_HEIGHT
+    global OUTER_HSPACE, OUTER_WSPACE, INNER_WSPACE, OUTER_MARGINS
+
+    filters_path = path or DEFAULT_FILTERS_PATH
+    if not filters_path.exists():
+        raise FileNotFoundError(
+            f"QC filters file not found: {filters_path}\n"
+            f"Expected configs/qc_filters.json next to visualization/qc.py."
+        )
+    with filters_path.open() as f:
+        cfg = json.load(f)
+
+    t = cfg["thresholds"]
+    STATIC_PATH_M = float(t["static_path_m"])
+    FLAT_GRIPPER_STD = float(t["flat_gripper_std"])
+    MIN_TRAJ_FRAMES = int(t.get("min_traj_frames", 2))
+    EXTENT_PADDING_RATIO = float(t.get("extent_padding_ratio", 0.05))
+    EXTENT_PADDING_MIN_CM = float(t.get("extent_padding_min_cm", 0.5))
+
+    cats = {k: v for k, v in cfg["categories"].items() if isinstance(v, dict)}
+    CATEGORY_COLORS = {k: v["color"] for k, v in cats.items()}
+    PROBLEM_CATEGORIES = {k for k, v in cats.items() if v.get("problem")}
+    CATEGORY_SORT_ORDER = {k: v["priority"] for k, v in cats.items()}
+
+    d = cfg["display"]
+    CATEGORY_DEFAULT_COLOR = d.get("category_default_color", "#999999")
+    TRAJ_COLOR = d["traj_color"]
+    GRIP_COLOR = d["gripper_color"]
+    PANEL_BG = d["panel_background"]
+    GRIPPER_YLIM = tuple(d.get("gripper_ylim", [-0.05, 1.05]))
+    EPISODES_PER_ROW = int(d.get("episodes_per_row", 3))
+    FIGSIZE_SESSION = tuple(d.get("figsize_session", [11.0, 2.4]))
+    FIGSIZE_SUMMARY = tuple(d.get("figsize_summary", [11.0, 0.4]))
+    FIGSIZE_SUMMARY_BASE_HEIGHT = float(d.get("figsize_summary_base_height", 1.5))
+    OUTER_HSPACE = float(d.get("outer_hspace", 0.55))
+    OUTER_WSPACE = float(d.get("outer_wspace", 0.30))
+    INNER_WSPACE = float(d.get("inner_wspace", 0.30))
+    OUTER_MARGINS = tuple(d.get("outer_margins", [0.04, 0.98, 0.95, 0.04]))
+
+
+# Auto-load at import so the importable API works without an explicit call.
+load_filters()
+
+
+# ============================================================================
+# Data classes
+# ============================================================================
 
 
 @dataclass
@@ -143,7 +220,7 @@ def _path_length(pos: np.ndarray | None) -> float:
 
 
 def classify(pos: np.ndarray | None, grip: np.ndarray | None) -> str:
-    if pos is None or len(pos) < 2:
+    if pos is None or len(pos) < MIN_TRAJ_FRAMES:
         return "no_traj"
     if _path_length(pos) < STATIC_PATH_M:
         return "static"
@@ -235,7 +312,7 @@ def _compute_traj_extent(session_data: dict[str, list[EpisodeQC]]) -> tuple[floa
     found = False
     for eps in session_data.values():
         for e in eps:
-            if e.pos is None or len(e.pos) < 2:
+            if e.pos is None or len(e.pos) < MIN_TRAJ_FRAMES:
                 continue
             xy = e.pos[:, :2] - e.pos[0, :2]
             x_min = min(x_min, float(xy[:, 0].min()) * 100)
@@ -245,15 +322,14 @@ def _compute_traj_extent(session_data: dict[str, list[EpisodeQC]]) -> tuple[floa
             found = True
     if not found:
         return None
-    # 5% padding, at least 5 mm so static (point) trajectories aren't edge-kissing
-    pad_x = max(0.5, (x_max - x_min) * 0.05)
-    pad_y = max(0.5, (y_max - y_min) * 0.05)
+    pad_x = max(EXTENT_PADDING_MIN_CM, (x_max - x_min) * EXTENT_PADDING_RATIO)
+    pad_y = max(EXTENT_PADDING_MIN_CM, (y_max - y_min) * EXTENT_PADDING_RATIO)
     return (x_min - pad_x, x_max + pad_x, y_min - pad_y, y_max + pad_y)
 
 
 def _plot_episode(axes, e: EpisodeQC, extent: tuple[float, float, float, float] | None = None):
     ax_traj, ax_grip = axes
-    cat_color = CATEGORY_COLORS.get(e.category, "#999")
+    cat_color = CATEGORY_COLORS.get(e.category, CATEGORY_DEFAULT_COLOR)
 
     # Match panel background so the pair reads as one group
     ax_traj.set_facecolor(PANEL_BG)
@@ -289,7 +365,7 @@ def _plot_episode(axes, e: EpisodeQC, extent: tuple[float, float, float, float] 
         ax_grip.plot(t[mask], e.grip[mask], "-", linewidth=1.0, color=GRIP_COLOR)
         if (~mask).any():
             ax_grip.plot(t[~mask], np.zeros((~mask).sum()), "rx", markersize=4)
-        ax_grip.set_ylim(-0.05, 1.05)
+        ax_grip.set_ylim(*GRIPPER_YLIM)
     else:
         ax_grip.text(0.5, 0.5, "no grip", ha="center", va="center",
                      transform=ax_grip.transAxes, fontsize=9)
@@ -302,7 +378,7 @@ def _plot_episode(axes, e: EpisodeQC, extent: tuple[float, float, float, float] 
 def _render_summary_page(pdf: PdfPages, session_data: dict[str, list[EpisodeQC]]):
     sessions = sorted(session_data.keys())
     n = len(sessions)
-    fig, ax = plt.subplots(figsize=(11, 0.4 * n + 1.5))
+    fig, ax = plt.subplots(figsize=(FIGSIZE_SUMMARY[0], FIGSIZE_SUMMARY[1] * n + FIGSIZE_SUMMARY_BASE_HEIGHT))
     ax.axis("off")
 
     rows = []
@@ -355,16 +431,17 @@ def _render_session_page(pdf: PdfPages, session_name: str, episodes: list[Episod
     episodes = sorted(episodes, key=lambda e: (CATEGORY_SORT_ORDER.get(e.category, 9),
                                                 -e.path_length_cm))
     n = len(episodes)
-    ncols = 3
+    ncols = EPISODES_PER_ROW
     nrows = int(np.ceil(n / ncols))
-    fig = plt.figure(figsize=(11, 2.4 * nrows))
+    fig = plt.figure(figsize=(FIGSIZE_SESSION[0], FIGSIZE_SESSION[1] * nrows))
 
     # Outer grid: one cell per episode. Generous wspace/hspace to make panels
     # read as distinct groups.
     outer = gridspec.GridSpec(
         nrows, ncols, figure=fig,
-        hspace=0.55, wspace=0.30,
-        left=0.04, right=0.98, top=0.95, bottom=0.04,
+        hspace=OUTER_HSPACE, wspace=OUTER_WSPACE,
+        left=OUTER_MARGINS[0], right=OUTER_MARGINS[1],
+        top=OUTER_MARGINS[2], bottom=OUTER_MARGINS[3],
     )
 
     cat_counts = defaultdict(int)
@@ -378,7 +455,7 @@ def _render_session_page(pdf: PdfPages, session_name: str, episodes: list[Episod
         row, col = divmod(i, ncols)
         # Inner 1x2 grid: traj | gripper, tighter spacing inside the group
         inner = gridspec.GridSpecFromSubplotSpec(
-            1, 2, subplot_spec=outer[row, col], wspace=0.30,
+            1, 2, subplot_spec=outer[row, col], wspace=INNER_WSPACE,
         )
         ax_traj = fig.add_subplot(inner[0, 0])
         ax_grip = fig.add_subplot(inner[0, 1])
@@ -428,7 +505,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="Session glob pattern (default: *-png)")
     p.add_argument("--csv-only", action="store_true", help="Skip PDF generation")
     p.add_argument("--pdf-only", action="store_true", help="Skip CSV generation")
+    p.add_argument("--filters", type=Path, default=None,
+                   help="Path to a qc_filters.json override (default: configs/qc_filters.json next to this script)")
     args = p.parse_args(argv)
+
+    if args.filters is not None:
+        load_filters(args.filters)
 
     if not args.root.exists():
         print(f"error: {args.root} does not exist", file=sys.stderr)
