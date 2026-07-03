@@ -72,9 +72,28 @@ python gripper_estimation_april_tag.py ~/Desktop/435/20260520_143052-png/episode
 
 # D435 config
 python gripper_estimation_april_tag.py /output/folder/ --configs configs/sroi_v1_d435.json
+
+# All episodes in a session share one min/max, robustly detected from the pooled data
+python gripper_estimation_april_tag.py --recursive ~/Desktop/435/20260520_143052-png
 ```
 
-### Step 6: Convert to LeRobot Dataset
+Gripper distance is normalized to `[0, 1]`. With `--recursive`, every episode in that run
+is normalized against one shared min/max (robust clustered-extremum over pooled raw
+distances) instead of each episode picking its own range. To set the range manually
+instead of auto-detecting it, add `"gripper_min_distance"` / `"gripper_max_distance"`
+(both required) to the camera config JSON passed via `--configs`.
+
+Each run also writes `gripper_distance_distribution.png` next to the input path — a
+histogram of the pooled raw distances with the selected min/max marked, so you can
+sanity-check the range before trusting the normalized `gripper_distances.txt` files.
+
+Add `--median_filter 3` (must be odd) to smooth single-frame AprilTag detection noise
+in the raw distances before the min/max is computed and episodes are normalized.
+Default is `1` (no filtering).
+
+### Step 6: QC and Convert to LeRobot Dataset
+
+For a single decoded session folder:
 
 ```bash
 python lerobot/sroi_to_lerobot.py \
@@ -84,6 +103,52 @@ python lerobot/sroi_to_lerobot.py \
     --root /mnt/data0/data/sroi/sroi_lab_picking \
     --task "pick the red strawberry"
 ```
+
+For a full recording day containing many `*-png` session folders, first run QC,
+then use the QC CSV to keep only selected categories (usually `ok`) while
+converting all sessions into one LeRobot dataset:
+
+```bash
+# Writes /path/to/day/qc.csv and /path/to/day/qc.pdf
+python visualization/qc.py /path/to/day -o /path/to/day/qc
+
+python lerobot/sroi_to_lerobot.py \
+    --data_path /path/to/day \
+    --repo_id sroi/lab_picking \
+    --fps 30 \
+    --root /mnt/data0/data/sroi/sroi_lab_picking \
+    --task "pick the red strawberry" \
+    --qc_csv /path/to/day/qc.csv \
+    --qc_categories ok \
+    --num_workers 4
+```
+
+`--root` must point to a dataset directory that does not already exist;
+`LeRobotDataset.create()` creates it fresh.
+
+### Optional: Merge LeRobot Datasets
+
+Use the official LeRobot edit tool when combining multiple completed local
+datasets into one dataset. The official checkout currently needs the `py312`
+conda environment and its source tree on `PYTHONPATH`:
+
+```bash
+cd /home/zfei/code/lerobots/lerobot_official
+
+PYTHONPATH=/home/zfei/code/lerobots/lerobot_official/src \
+/home/zfei/anaconda3/envs/py312/bin/python -m lerobot.scripts.lerobot_edit_dataset \
+    --new_repo_id sroi/sroi_v2_merged_official \
+    --new_root /mnt/data1/data/lerobot/sroi_v2_merged_official \
+    --operation.type merge \
+    --operation.repo_ids "['sroi/lerobot_sroi_v2', 'sroi/sroi_v2_20260611']" \
+    --operation.roots "['/mnt/data1/data/lerobot/lerobot_sroi_v2', '/mnt/data1/data/lerobot/sroi_v2_20260611']"
+```
+
+`--operation.repo_ids` labels the input datasets; `--operation.roots` provides
+the exact local dataset folders. `--new_root` must not already exist. Keep a
+small provenance note (for example `MERGE_INFO.md` and `merge_info.json`) in the
+merged dataset folder listing the input datasets, frame counts, and merge
+command.
 
 ---
 

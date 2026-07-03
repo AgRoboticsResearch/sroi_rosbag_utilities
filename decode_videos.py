@@ -49,6 +49,30 @@ def decode_episode(episode_dir: Path, output_dir: Path):
     if output_dir.exists() and any(output_dir.glob("left_*.png")):
         print(f"  Already decoded, skipping.")
         return
+
+    # Skip incomplete recordings: an aborted/interrupted episode leaves empty
+    # timestamps.json / times.txt (and sometimes 0-byte mp4s). Without timing
+    # metadata the episode is not usable downstream (transform_trajectory needs
+    # times.txt), so skip it with a warning instead of crashing the whole batch.
+    ts_path = episode_dir / "timestamps.json"
+    expected_frames = None
+    if not ts_path.exists() or ts_path.stat().st_size == 0:
+        print(f"  WARNING: missing/empty timestamps.json, skipping incomplete episode.")
+        return
+    try:
+        with open(ts_path) as f:
+            ts_data = json.load(f)
+        expected_frames = ts_data.get("frame_count")
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"  WARNING: unreadable timestamps.json ({e}), skipping incomplete episode.")
+        return
+
+    # Skip if there are no non-empty mp4 streams to decode.
+    if not any((episode_dir / f"{s}.mp4").exists() and (episode_dir / f"{s}.mp4").stat().st_size > 0
+               for s in STREAM_NAMES):
+        print(f"  WARNING: no non-empty mp4 streams, skipping incomplete episode.")
+        return
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy metadata files
@@ -61,14 +85,6 @@ def decode_episode(episode_dir: Path, output_dir: Path):
     # Copy ORB-SLAM yaml if present
     for yml in episode_dir.glob("*.yaml"):
         shutil.copy2(yml, output_dir / yml.name)
-
-    # Load timestamps for validation
-    ts_path = episode_dir / "timestamps.json"
-    expected_frames = None
-    if ts_path.exists():
-        with open(ts_path) as f:
-            ts_data = json.load(f)
-            expected_frames = ts_data.get("frame_count")
 
     stream_frame_counts = {}
     for stream_name in STREAM_NAMES:

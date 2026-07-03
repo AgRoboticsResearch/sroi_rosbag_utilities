@@ -1,0 +1,82 @@
+{
+  "_doc": "Filter rules for visualization/qc.py — the single source of truth for thresholds, category metadata, colors, and page layout. qc.py loads this at startup; edit values here instead of editing the script. Pass --filters <path> to override per-run.",
+  "version": 2,
+
+  "thresholds": {
+    "_doc": "Numeric cutoffs used by classify() and the extent computation.",
+    "static_path_m": 0.1,
+    "flat_gripper_std": 0.05,
+    "min_traj_frames": 30,
+    "extent_padding_ratio": 0.05,
+    "extent_padding_min_cm": 0.5
+  },
+
+  "categories": {
+    "_doc": "Ordered classification chain. classify() evaluates categories by priority (lowest first); first match wins. Each entry: color (hex), problem (bool — counts against session in summary + sort), priority (int — lower sorts to top of page), rule + description (documentation only).",
+
+    "no_traj": {
+      "color": "#757575",
+      "problem": true,
+      "priority": 0,
+      "rule": "CameraTrajectoryTransformed.txt missing/empty OR n_traj_frames < thresholds.min_traj_frames",
+      "description": "Trajectory file missing or too short to compute motion"
+    },
+    "all_nan_gripper": {
+      "color": "#c62828",
+      "problem": true,
+      "priority": 1,
+      "rule": "gripper_distances.txt present but every value is NaN",
+      "description": "AprilTag never detected — no finite signal"
+    },
+    "no_gripper": {
+      "color": "#757575",
+      "problem": true,
+      "priority": 2,
+      "rule": "gripper_distances.txt missing or empty",
+      "description": "No gripper signal recorded"
+    },
+    "static": {
+      "color": "#c62828",
+      "problem": true,
+      "priority": 3,
+      "rule": "path_length_m < thresholds.static_path_m",
+      "description": "Trajectory exists but camera barely moved (<1 cm)"
+    },
+    "flat_gripper": {
+      "color": "#ef6c00",
+      "problem": true,
+      "priority": 4,
+      "rule": "motion present AND finite gripper_std < thresholds.flat_gripper_std",
+      "description": "Camera moved but gripper signal has no actuation"
+    },
+    "ok": {
+      "color": "#2e7d32",
+      "problem": false,
+      "priority": 5,
+      "rule": "otherwise (default branch)",
+      "description": "Non-static motion + valid gripper signal"
+    }
+  },
+
+  "display": {
+    "_doc": "Plot appearance and page layout. Hex colors only.",
+    "traj_color": "#1565c0",
+    "gripper_color": "#e65100",
+    "panel_background": "#f5f7fa",
+    "category_default_color": "#999999",
+
+    "gripper_ylim": [-0.05, 1.05],
+
+    "episodes_per_row": 3,
+    "figsize_session": [11.0, 2.4],
+    "figsize_summary": [11.0, 0.4],
+    "figsize_summary_base_height": 1.5,
+
+    "outer_hspace": 0.55,
+    "outer_wspace": 0.30,
+    "inner_wspace": 0.30,
+    "outer_margins": [0.04, 0.98, 0.95, 0.04],
+
+    "sort_problem_categories_to_top": true
+  }
+}

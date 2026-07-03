@@ -13,50 +13,130 @@ The converter reads end-effector poses, gripper distances and per-frame camera i
 
 ## Data Layout Expected
 
-Your data directory should contain at least:
+`--data_path` can point at one of three levels:
 
 ```
-data_directory/
+# 1. Single episode
+episode_001/
 ├── CameraTrajectoryTransformed.txt   # timestamps + 3x4 transform per frame
 ├── gripper_distances.txt             # one gripper measurement per line
-├── color_000000.png                  # camera images (color_*.png)
-├── color_000001.png
+├── color_000000.png                  # camera images (color_*.png or color_*.jpg)
+└── ...
+
+# 2. Single session
+20260520_143052-png/
+├── episode_001/
+├── episode_002/
+└── ...
+
+# 3. Multi-session parent
+20260611/
+├── 20260611_151828-mp4/              # ignored by the converter
+├── 20260611_151828-png/              # converted
+├── 20260611_155158-png/              # converted
 └── ...
 ```
 
+In multi-session mode, the converter only uses session folders that contain
+convertible decoded episodes (`episode_*` with transformed trajectory, gripper
+file, and color frames). Original `*-mp4` folders are ignored.
+
 ## Usage
 
-Run the converter directly from anywhere (it will add the local `lerobot` package to `sys.path`):
+Run the converter directly from anywhere (it will add the local `lerobot` package to `sys.path`).
+
+Single episode or single session conversion:
 
 ```bash
 python /home/zfei/code/sroi_rosbag_utilities/lerobot/sroi_to_lerobot.py \
-    --data_path "/path/to/your/segment/" \
+    --data_path "/path/to/your/session-png" \
     --repo_id "your_username/your_dataset_name" \
     --fps 30 \
-    --root "/tmp/lerobot_datasets" \
+    --root "/tmp/lerobot_datasets/my_dataset" \
     --task "End-effector manipulation task"
 ```
 
-To push the created dataset to the Hugging Face Hub add `--push_to_hub` and provide a `--repo_id` that you own:
+Convert a full day / parent folder containing many decoded `*-png` sessions into one dataset:
 
 ```bash
 python /home/zfei/code/sroi_rosbag_utilities/lerobot/sroi_to_lerobot.py \
-    --data_path "/path/to/your/segment/" \
+    --data_path "/path/to/20260611" \
     --repo_id "your_username/your_dataset_name" \
-    --push_to_hub \
-    --task "Your task description"
+    --fps 30 \
+    --root "/tmp/lerobot_datasets/my_dataset" \
+    --task "pick the strawberry" \
+    --num_workers 4
 ```
 
-There is also an example wrapper `example_convert.py` and a small `test_conversion.py` in the same folder for quick local testing.
+Filter conversion using QC results from `visualization/qc.py` (recommended for large recording batches):
+
+```bash
+python /home/zfei/code/sroi_rosbag_utilities/visualization/qc.py \
+    "/path/to/20260611" \
+    -o "/path/to/20260611/qc"
+
+python /home/zfei/code/sroi_rosbag_utilities/lerobot/sroi_to_lerobot.py \
+    --data_path "/path/to/20260611" \
+    --repo_id "your_username/your_dataset_name" \
+    --fps 30 \
+    --root "/tmp/lerobot_datasets/my_dataset" \
+    --task "pick the strawberry" \
+    --qc_csv "/path/to/20260611/qc.csv" \
+    --qc_categories "ok" \
+    --num_workers 4
+```
+
+`--qc_categories` is comma-separated, e.g. `ok,flat_gripper`. `--episodes` is still available for single-session conversion, but it is intentionally rejected in multi-session mode because names like `episode_001` occur in every session.
+
+To push the created dataset to the Hugging Face Hub add `--push_to_hub` and provide a `--repo_id` that you own.
+
+There is also an example wrapper `example_convert.py` in the same folder for quick local testing.
 
 ## CLI Arguments
 
-- `--data_path` (required): Path to the SROI segment folder
-- `--repo_id` (required): Dataset repo id used for `LeRobotDataset.create` (e.g. `username/dataset`)
-- `--fps`: Frames per second for the dataset (default: `30`)
-- `--root`: Filesystem root where dataset is written (defaults to LeRobot internal default if omitted)
-- `--push_to_hub`: If set, pushes the saved dataset to the HF Hub
-- `--task`: Task description string stored with each frame
+- `--data_path` (required): Path to a single episode, a single session folder, or a parent folder containing many decoded `*-png` sessions.
+- `--repo_id` (required): Dataset repo id used for `LeRobotDataset.create` (e.g., `username/dataset`).
+- `--fps`: Frames per second for the dataset (default: `30`).
+- `--root`: Filesystem root where the dataset is written. It must not already exist; `LeRobotDataset.create()` creates it fresh.
+- `--push_to_hub`: If set, pushes the saved dataset to the HF Hub.
+- `--task`: Task description string stored with each frame.
+- `--episodes`: Comma-separated episode names to convert from a single session, or `all` (default). Mutually exclusive with `--qc_csv`. Not allowed in multi-session mode.
+- `--num_workers`: Parallel image-loading workers (default: `4`; use `1` for sequential loading).
+- `--qc_csv`: Optional path to `qc.csv` from `visualization/qc.py`; filters episodes by QC category for each session.
+- `--qc_categories`: Comma-separated QC categories to keep when `--qc_csv` is set (default: `ok`).
+
+## Merging Completed LeRobot Datasets
+
+After creating separate local LeRobot datasets, merge them with the official
+LeRobot edit tool from `/home/zfei/code/lerobots/lerobot_official`. Use the
+`py312` conda environment because the official checkout requires Python 3.12.
+
+Example: merge two local datasets under `/mnt/data1/data/lerobot` into a new
+dataset folder:
+
+```bash
+cd /home/zfei/code/lerobots/lerobot_official
+
+PYTHONPATH=/home/zfei/code/lerobots/lerobot_official/src \
+/home/zfei/anaconda3/envs/py312/bin/python -m lerobot.scripts.lerobot_edit_dataset \
+    --new_repo_id sroi/sroi_v2_merged_official \
+    --new_root /mnt/data1/data/lerobot/sroi_v2_merged_official \
+    --operation.type merge \
+    --operation.repo_ids "['sroi/lerobot_sroi_v2', 'sroi/sroi_v2_20260611']" \
+    --operation.roots "['/mnt/data1/data/lerobot/lerobot_sroi_v2', '/mnt/data1/data/lerobot/sroi_v2_20260611']"
+```
+
+Notes:
+
+- `--new_root` is the output dataset folder and must not already exist.
+- `--operation.roots` are exact local source dataset folders.
+- `--operation.repo_ids` are labels for those source datasets and must have the
+  same length/order as `--operation.roots`.
+- Keep merge provenance in the output dataset folder (for example
+  `MERGE_INFO.md` and `merge_info.json`) with source paths, source episode/frame
+  counts, output counts, and the exact command.
+- A quick sanity check is to compare `meta/info.json` from each source and the
+  merged output; expected merged counts are the sum of source episodes/frames.
 
 ## Produced LeRobot v3.0 Feature Schema
 
