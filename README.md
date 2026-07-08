@@ -126,6 +126,49 @@ python lerobot/sroi_to_lerobot.py \
 `--root` must point to a dataset directory that does not already exist;
 `LeRobotDataset.create()` creates it fresh.
 
+### Step 6b: IK Feasibility Check (experimental, optional)
+
+`visualization/ik_feasibility.py` is an **experimental** layer that runs the same
+Piper inverse kinematics the real deploy uses (`examples/umi_relative_ee/deploy_umi_relative_ee_piper.py`,
+placo-backed) over each recorded trajectory and reports whether the arm could track
+it. It writes `ik_feasibility.csv` + `ik_feasibility.pdf` (one summary page + one
+page per episode: joint traces vs URDF limits, desired-vs-reached EE xyz/rpy, and
+pos/rot error vs tolerance). It runs on the same `*-png` tree as QC.
+
+It needs the `py310` conda env (placo) and the `sroi-piper` submodule URDF
+(initialize it once from the lerobot checkout: `git submodule update --init sroi-piper`):
+
+```bash
+# From the repo root, py310 interpreter:
+/home/zfei/anaconda3/envs/py310/bin/python visualization/ik_feasibility.py \
+    /path/to/day -o /path/to/day/ik_feasibility
+```
+
+Seed, tolerances, URDF path, joint limits, and category thresholds live in
+`configs/ik_filters.json`; override with `--filters`, `--seed`, `--urdf`.
+
+**By default this does NOT filter the dataset** — it only produces a report. The CSV
+keeps the `session, episode, category` columns (categories: `ik_ok`, `ik_unreachable`,
+`ik_joint_limit`, `ik_branch_jump`, `ik_no_traj`), so you *can* opt into IK-based
+filtering by passing it to the converter, but this is deliberate and off by default:
+
+```bash
+# OPT-IN: also gate the LeRobot dataset on the IK verdict (not the default)
+python lerobot/sroi_to_lerobot.py \
+    --data_path /path/to/day \
+    --repo_id sroi/lab_picking \
+    --fps 30 \
+    --root /mnt/data0/data/sroi/sroi_lab_picking \
+    --task "pick the red strawberry" \
+    --qc_csv /path/to/day/ik_feasibility.csv \
+    --qc_categories ik_ok
+```
+
+Caveat: the IK verdict is seed-dependent (the arm is assumed to start from the
+`start` seed, the deploy's ready pose) and the anchor is a necessary-not-sufficient
+heuristic — a pass means "the deploy IK would accept this trajectory from that seed
+within tolerance", not a guarantee of dynamic executability. See the module docstring.
+
 ### Optional: Merge LeRobot Datasets
 
 Use the official LeRobot edit tool when combining multiple completed local
