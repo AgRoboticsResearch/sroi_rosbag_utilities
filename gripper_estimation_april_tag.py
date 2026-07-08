@@ -108,7 +108,7 @@ def print_config(cfg, path):
     print(f"  tag_family           : {cfg['tag_family']}")
     print(f"  left_gripper_tag_id  : {cfg['left_gripper_tag_id']}")
     print(f"  right_gripper_tag_id : {cfg['right_gripper_tag_id']}")
-    print(f"  nominal_diag_distance: {cfg.get('nominal_diag_distance', cfg.get('norminal_diag_distance', 'N/A'))}")
+    print(f"  nominal_diag_distance: {cfg.get('nominal_diag_distance', 'N/A')}")
     print(f"  threshold            : {cfg['threshold']}")
     manual_min = cfg.get("gripper_min_distance")
     manual_max = cfg.get("gripper_max_distance")
@@ -298,7 +298,7 @@ def calibrate(data_folder, config_path, output_path):
 
     cv.createTrackbar("top roi", win, cfg["gripper_roi"], h, lambda x: None)
     cv.createTrackbar("bottom roi", win, default_bottom, h, lambda x: None)
-    cv.createTrackbar("diag dist", win, cfg.get("nominal_diag_distance", cfg.get("norminal_diag_distance", 50)), 200, lambda x: None)
+    cv.createTrackbar("diag dist", win, cfg.get("nominal_diag_distance", 50), 200, lambda x: None)
     cv.createTrackbar("threshold", win, cfg["threshold"], 100, lambda x: None)
 
     detector = Detector(families=tag_family, nthreads=1, quad_decimate=1.0,
@@ -309,7 +309,7 @@ def calibrate(data_folder, config_path, output_path):
     while True:
         top_roi = cv.getTrackbarPos("top roi", win)
         bottom_roi = cv.getTrackbarPos("bottom roi", win)
-        norminal_diag = cv.getTrackbarPos("diag dist", win)
+        nominal_diag = cv.getTrackbarPos("diag dist", win)
         threshold_val = cv.getTrackbarPos("threshold", win)
 
         # Detect
@@ -329,7 +329,7 @@ def calibrate(data_folder, config_path, output_path):
         y0 = 0
         info_lines = [
             (f"family={tag_family}  left_id={left_id}  right_id={right_id}", (200, 200, 200)),
-            (f"top={top_roi}  bottom={bottom_roi}  diag={norminal_diag}  thresh={threshold_val}", (200, 200, 200)),
+            (f"top={top_roi}  bottom={bottom_roi}  diag={nominal_diag}  thresh={threshold_val}", (200, 200, 200)),
             (f"Detected: {len(results)} tags", (200, 200, 200)),
             (f"Left(id={left_id}): {'FOUND' if left_found else 'MISSING'}", (0, 255, 0) if left_found else (0, 0, 255)),
             (f"Right(id={right_id}): {'FOUND' if right_found else 'MISSING'}", (0, 255, 0) if right_found else (0, 0, 255)),
@@ -354,7 +354,7 @@ def calibrate(data_folder, config_path, output_path):
                 "tag_family": tag_family,
                 "left_gripper_tag_id": left_id,
                 "right_gripper_tag_id": right_id,
-                "nominal_diag_distance": norminal_diag,
+                "nominal_diag_distance": nominal_diag,
                 "threshold": threshold_val,
             }
             out = output_path or config_path
@@ -387,7 +387,7 @@ def detect_raw_distances(data_folder, cfg, at_detector, verbose=False, median_fi
     gripper_roi_bottom = cfg.get("gripper_roi_bottom")
     left_gripper_tag_id = cfg["left_gripper_tag_id"]
     right_gripper_tag_id = cfg["right_gripper_tag_id"]
-    nominal_diag_distance = cfg.get("nominal_diag_distance", cfg.get("norminal_diag_distance", 50))
+    nominal_diag_distance = cfg.get("nominal_diag_distance", 50)
     threshold = cfg["threshold"]
 
     images = sorted(glob.glob(data_folder + "color_*.png") + glob.glob(data_folder + "color_*.jpg"))
