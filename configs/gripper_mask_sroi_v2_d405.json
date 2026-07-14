@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "description": "SROI v2 D405 gripper mask for 640x480 stereo IR frames",
+  "coordinate_convention": "Pixel [x, y] coordinates with origin at the top-left; x increases right and y increases down",
+  "image_size": {
+    "width": 640,
+    "height": 480
+  },
+  "streams": {
+    "left": {
+      "polygons": [
+        [
+          [
+            236,
+            292
+          ],
+          [
+            417,
+            292
+          ],
+          [
+            525,
+            467
+          ],
+          [
+            127,
+            467
+          ]
+        ]
+      ],
+      "black_below_row": 467
+    },
+    "right": {
+      "polygons": [
+        [
+          [
+            182,
+            292
+          ],
+          [
+            365,
+            292
+          ],
+          [
+            444,
+            467
+          ],
+          [
+            46,
+            467
+          ]
+        ]
+      ],
+      "black_below_row": 467
+    }
+  }
+}

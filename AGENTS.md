@@ -27,9 +27,13 @@ python decode_videos.py <input> --recursive -o /path/to/output
 
 # Run ORB-SLAM3 on every episode
 # Host install (e.g. ~/code/ORB_SLAM3) — pass the install dir explicitly:
-batches/orbslam_batch_local.sh /path/to/session-png ~/code/ORB_SLAM3 [skip_existing=true] [visualization=false]
+batches/orbslam_batch_local.sh /path/to/session-png ~/code/ORB_SLAM3 [skip_existing=true] [visualization=false] [--mask-config PATH]
 # Inside the ORB_SLAM3 Docker container (hardcoded /ORB_SLAM3 paths):
-batches/orbslam_batch_d405.sh /path/to/session-png [skip_existing=true] [visualization=false]
+batches/orbslam_batch_d405.sh /path/to/session-png [skip_existing=true] [visualization=false] [--mask-config PATH]
+
+# Render trajectory projection using the matching camera/gripper extrinsics
+python visualization/visualize_traj_video.py /path/to/session-png --recursive \
+    --extrinsics-config configs/camera_gripper_extrinsics_sroi_v2_d405.json
 
 # Transform ORB-SLAM camera trajectory into X-forward initial-camera frame
 python transform_trajectory.py --recursive /path/to/session-png
@@ -84,6 +88,9 @@ All steps agree on this on-disk shape and use the suffixes to know which step a 
 ### Recording produces everything downstream needs
 `record_realsense.py` is more than a recorder: it also writes the ORB-SLAM YAML for the recorded camera (D405 uses fixed calibration, D435i uses live calibration), so the ORB-SLAM step is fully driven by recording output. Switching cameras (D405 vs D435i) requires the matching `configs/sroi_v*.json` for gripper estimation and a different `batches/orbslam_batch_*.sh` — don't mix them.
 
+### Rig-specific mask and projection configs
+Gripper masking is opt-in in the standard ORB batch scripts. Passing `--mask-config` creates temporary masked stereo frames, runs ORB-SLAM3 on them, copies `CameraTrajectory.txt` back to the original episode, and removes the temporary input; source images are not changed. Omitting the option preserves the original unmasked path. Projection visualization separately loads camera-to-gripper-tip transforms through `--extrinsics-config`. The supplied SROI v2 D405 files are `configs/gripper_mask_sroi_v2_d405.json` and `configs/camera_gripper_extrinsics_sroi_v2_d405.json`; use matching files for another physical rig. Schema and validation details are in `doc/rig_configs.md`.
+
 ### Encoding modes trade off disk vs memory
 `record_realsense.py` defaults to PNG. `--encode-video` writes MP4 (smallest, requires `av`). Three encoding paths:
 - **PNG/JPEG to disk** (default): write frames as you go.
@@ -125,7 +132,6 @@ The LeRobot converter auto-adds its local `lerobot/` package to `sys.path` when 
 
 ## Repo quirks
 
-- `AGENTS.md` is in `.gitignore` — it will not be committed. Treat it as a local-only aid.
 - `batches/orbslam_batch_d405.sh` and `orbslam_batch.sh` assume the ORB_SLAM3 Docker container (`/ORB_SLAM3` paths); `orbslam_batch_local.sh` takes the install dir as `$2` and runs on the host.
 - `extract_rgbd/` and `notebooks/` contain older/experimental variants and Jupyter scratch — prefer the top-level scripts for new work.
 - The host ORB_SLAM3 install lives at `/home/zfei/code/ORB_SLAM3`; `stereo_kitti` is invoked directly when using the local batch.

@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "visualization")
 import visualize_traj_video as vtv  # Reuse trajectory loading and projection helpers
 
 
-def render_episode(ep_dir, schemes, fps, codec, out_mp4):
+def render_episode(ep_dir, schemes, fps, codec, out_mp4, tip_kin):
     color = sorted([*ep_dir.glob("color_*.png"), *ep_dir.glob("color_*.jpg")])
     K = vtv.load_K(ep_dir / "camera_info_color.json")
     poses_per = {}
@@ -74,7 +74,7 @@ def render_episode(ep_dir, schemes, fps, codec, out_mp4):
             for i, sch in enumerate(schemes):
                 im_objs[i].set_data(img)
                 if poses_per[sch] is not None and t < len(poses_per[sch]):
-                    px, py = vtv.project_future(poses_per[sch], t, K)
+                    px, py = vtv.project_future(poses_per[sch], t, K, tip_kin)
                     pts = np.column_stack([px, py])
                     segs = (np.stack([pts[:-1], pts[1:]], axis=1)
                             if len(pts) >= 2 else np.empty((0, 2, 2)))
@@ -102,7 +102,16 @@ def main():
     ap.add_argument("--schemes", nargs="+", default=["raw", "maskhalf", "maskgripper"])
     ap.add_argument("--fps", type=int, default=20)
     ap.add_argument("--codec", default="libopenh264")
+    ap.add_argument(
+        "--extrinsics-config",
+        type=Path,
+        default=vtv.DEFAULT_EXTRINSICS_CONFIG,
+    )
     args = ap.parse_args()
+    try:
+        tip_kin = vtv.load_tip_kin(args.extrinsics_config)
+    except ValueError as error:
+        ap.error(str(error))
     sd = Path(args.schemes_dir)
     outdir = sd / "_compare"  # Keep comparison output inside the schemes tree
     outdir.mkdir(exist_ok=True)
@@ -113,7 +122,7 @@ def main():
         mp4 = outdir / f"{ep.name}.mp4"
         if mp4.exists() and mp4.stat().st_size > 10000:
             print(f"[{i}/{len(eps)}] {ep.name} skip", flush=True); continue
-        if render_episode(ep, args.schemes, args.fps, args.codec, mp4):
+        if render_episode(ep, args.schemes, args.fps, args.codec, mp4, tip_kin):
             ok += 1; print(f"[{i}/{len(eps)}] {ep.name} ok", flush=True)
         else:
             print(f"[{i}/{len(eps)}] {ep.name} skip(no data)", flush=True)

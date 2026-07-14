@@ -5,17 +5,22 @@ standalone tooling used for the experiment.
 
 ## Pipeline integration status
 
-**The gripper mask is not currently integrated into the canonical pipeline.** The
-normal `record_realsense.py -> decode_videos.py -> batches/orbslam_batch_*.sh`
-workflow still runs ORB-SLAM3 on the unmasked stereo images at the episode root.
-`build_session_schemes.sh` and the other scripts in this directory form a separate
-comparison workflow.
+The gripper mask is integrated into the canonical ORB batch scripts as an **opt-in**
+step. Existing commands remain unmasked. Pass a rig-specific config to enable masking:
 
-The masker writes derived images to `episode_*/maskgripper/`. The existing ORB batch
-scripts do not automatically discover that nested directory. Use
-`run_orb_scheme.py` for a schemes tree, or explicitly pass the masked directory to
-ORB-SLAM3. Making maskgripper the production default requires a separate integration
-change to the canonical ORB batch scripts and top-level pipeline documentation.
+```bash
+batches/orbslam_batch_local.sh <session> <orbslam-dir> true false \
+    --mask-config configs/gripper_mask_sroi_v2_d405.json
+
+batches/orbslam_batch_d405.sh <session> true false \
+    --mask-config configs/gripper_mask_sroi_v2_d405.json
+```
+
+The batch creates temporary masked stereo frames, runs ORB on them, copies the trajectory
+back to the original episode, and removes the temporary input. Source images are never
+modified. The mask and extrinsics schemas are documented in
+[`../doc/rig_configs.md`](../doc/rig_configs.md). The other scripts in this directory
+remain useful for multi-scheme experiments.
 
 ## Preliminary experiment findings
 
@@ -44,7 +49,8 @@ produce high-contrast moving features that violate ORB-SLAM's static-scene assum
 
 Apply the per-eye gripper mask before running ORB-SLAM:
 ```bash
-python3 schemes_compare/mask_gripper_trapezoid.py <schemes/session/episode-directory>
+python3 schemes_compare/mask_gripper_trapezoid.py <schemes/session/episode-directory> \
+    --config configs/gripper_mask_sroi_v2_d405.json
 ```
 
 For a schemes directory, the script reads `episode_*/raw/`. For a normal session or
@@ -66,8 +72,9 @@ MASK_DATA=/path/to/data bash schemes_compare/build_session_schemes.sh 20260709_X
 # 2) Transform each scheme trajectory for RGB projection
 python3 transform_trajectory.py <session>-schemes --recursive
 
-# 3) Render side-by-side comparison videos
-python3 schemes_compare/viz_scheme_compare.py <session>-schemes
+# 3) Render side-by-side comparison videos with this rig's extrinsics
+python3 schemes_compare/viz_scheme_compare.py <session>-schemes \
+    --extrinsics-config configs/camera_gripper_extrinsics_sroi_v2_d405.json
 
 # 4) Calculate completeness and deviation against maskhalf
 python3 schemes_compare/deviation_vs_baseline.py <session>-schemes
@@ -80,7 +87,7 @@ Outputs are written under `<session>-schemes/_compare/`.
 
 ## Files
 
-- `mask_gripper_trapezoid.py`: creates the maskgripper images.
+- `mask_gripper_trapezoid.py`: creates config-driven maskgripper images.
 - `mask_session.py`: creates the maskhalf comparison images.
 - `schemes_init.py`: builds the per-episode schemes layout.
 - `build_session_schemes.sh`: runs the standalone end-to-end comparison workflow.
@@ -92,8 +99,8 @@ Outputs are written under `<session>-schemes/_compare/`.
 
 ## Notes
 
-- `T_CAM_EE` in `visualization/visualize_traj_video.py` was measured for one rig.
-  Verify the projected green point on every different camera/gripper assembly.
+- Projection extrinsics are loaded from `configs/camera_gripper_extrinsics_sroi_v2_d405.json`.
+  Use a separate config and verify the projected green point for every different rig.
 - The default data root is `/home/ss/data/1000_onesb_labpicking`. Override it with
   `MASK_DATA`, or pass a data-root argument to `aggregate_schemes.py`.
 - `run_orb_scheme.py` defaults to `~/code/ORB_SLAM3`. Override it with

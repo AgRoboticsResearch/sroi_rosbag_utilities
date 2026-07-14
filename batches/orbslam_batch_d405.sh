@@ -9,6 +9,7 @@
 #   $1 - session_dir: Path to session directory containing episode_* folders
 #   $2 - skip_existing: "true" to skip episodes with CameraTrajectory.txt (default: true)
 #   $3 - visualization: "true" to enable GUI (default: false)
+#   $4/$5 - optional: --mask-config PATH
 
 ORB_SLAM_DIR="/ORB_SLAM3"
 STEREO_KITTI="$ORB_SLAM_DIR/Examples/Stereo/stereo_kitti"
@@ -18,12 +19,28 @@ VOCAB="$ORB_SLAM_DIR/Vocabulary/ORBvoc.txt"
 SESSION_DIR="${1:-}"
 SKIP_EXIST="${2:-true}"
 VISUALIZATION="${3:-false}"
+MASK_CONFIG=""
+if [ -n "${4:-}" ]; then
+    if [ "$4" != "--mask-config" ] || [ -z "${5:-}" ] || [ -n "${6:-}" ]; then
+        echo "Error: optional mask syntax is --mask-config PATH" >&2
+        exit 1
+    fi
+    MASK_CONFIG="$5"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/orbslam_mask_helpers.sh"
 
 if [ -z "$SESSION_DIR" ]; then
-    echo "Usage: $0 <session_dir> [skip_existing] [visualization]"
+    echo "Usage: $0 <session_dir> [skip_existing] [visualization] [--mask-config PATH]"
     echo "  session_dir: path containing episode_* folders"
     echo "  skip_existing: \"true\" to skip episodes with CameraTrajectory.txt"
     echo "  visualization: \"true\" to enable GUI"
+    echo "  --mask-config: optional gripper-mask JSON; omitted means no masking"
+    exit 1
+fi
+
+if ! sroi_configure_mask "$MASK_CONFIG"; then
     exit 1
 fi
 
@@ -36,6 +53,7 @@ echo "============================================"
 echo "Session directory: $SESSION_DIR"
 echo "Skip existing: $SKIP_EXIST"
 echo "Visualization: $VISUALIZATION"
+echo "Mask config: ${SROI_MASK_CONFIG:-none}"
 echo ""
 
 # Find episode folders
@@ -86,23 +104,29 @@ for folder in "${EPISODE_FOLDERS[@]}"; do
         CONFIG_TO_USE="Examples/Stereo/RealSense_D405.yaml"
     fi
 
+    if ! sroi_prepare_orb_input "$folder"; then
+        echo "  Error: failed to prepare masked ORB input"
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+        continue
+    fi
+
     # Run ORB_SLAM3
     cd "$ORB_SLAM_DIR"
 
     if [ "$VISUALIZATION" = "true" ]; then
-        "$STEREO_KITTI" "$VOCAB" "$CONFIG_TO_USE" "$folder" true
+        "$STEREO_KITTI" "$VOCAB" "$CONFIG_TO_USE" "$SROI_ORB_INPUT_DIR" true
     else
-        "$STEREO_KITTI" "$VOCAB" "$CONFIG_TO_USE" "$folder" false
+        "$STEREO_KITTI" "$VOCAB" "$CONFIG_TO_USE" "$SROI_ORB_INPUT_DIR" false
     fi
 
-    # Check if trajectory was created
-    if [ -f "$OUTPUT_FILE" ]; then
+    if sroi_collect_trajectory "$folder"; then
         echo "  Done: CameraTrajectory.txt saved"
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
     else
         echo "  Error: CameraTrajectory.txt not generated"
         ERROR_COUNT=$((ERROR_COUNT + 1))
     fi
+    sroi_cleanup_mask_input
 done
 
 # Summary

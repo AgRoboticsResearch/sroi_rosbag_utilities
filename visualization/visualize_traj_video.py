@@ -15,10 +15,14 @@ Usage (from repo root):
     # a whole session / parent tree
     python visualization/visualize_traj_video.py .../session-png --recursive
     python visualization/visualize_traj_video.py .../pngs --recursive
+    # use the calibration for a specific camera/gripper assembly
+    python visualization/visualize_traj_video.py .../session-png --recursive \
+        --extrinsics-config configs/camera_gripper_extrinsics_sroi_v2_d405.json
 Options: --fps 30 --codec libopenh264 --skip-existing --max-episodes N
 """
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -31,29 +35,49 @@ from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (registers 3d projection)
 import numpy as np
 
-# Fixed camera<->gripper-tip transforms for the Piper rig, hardcoded from the
-# sroi-piper piper.urdf fixed-link chain (so we don't need placo/URDF at runtime).
-# Same values examples/umi_relative_ee/visualize_predictions.py computes live via
-# placo get_T_a_b("camera_optical_link","camera_link") and get_T_a_b("camera_link","ee_link").
-#   T_OPT_CAM : pose of camera_link in camera_optical_link frame (cam-link -> optical)
-#   T_CAM_EE  : pose of ee_link (gripper tip) in camera_link frame (tip offset)
-T_OPT_CAM = np.array([
-    [2.6794896412773997e-08, -0.9999999999999996, 5.183267242978961e-17, 0.0],
-    [2.6794896357262843e-08, 7.734776252012516e-16, -0.9999999999999998, 0.0],
-    [0.9999999999999993, 2.6794896412773968e-08, 2.6794896468285145e-08, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-])
-# Recalibrated for this rig (2026-07-12, measured off the assembly drawing):
-# tip at +0.145 m forward, -0.030 m down in camera_link (X-fwd/Y-left/Z-up,
-# origin = optical center); gripper frame held horizontal while camera is tilted
-# 30deg down -> pitch -30deg about Y. (Point projection only uses the translation.)
-T_CAM_EE = np.array([
-    [ 0.8660254, 0.0, -0.5,        0.145 ],
-    [ 0.0,       1.0,  0.0,        0.0   ],
-    [ 0.5,       0.0,  0.8660254, -0.030 ],
-    [ 0.0,       0.0,  0.0,        1.0   ],
-])
-TIP_KIN = (T_OPT_CAM, T_CAM_EE)
+# Projection extrinsics are loaded from a standalone rig config so different
+# camera/gripper assemblies can provide their own measured transforms.
+DEFAULT_EXTRINSICS_CONFIG = (
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "camera_gripper_extrinsics_sroi_v2_d405.json"
+)
+
+
+def _load_rigid_transform(config: dict, key: str, config_path: Path) -> np.ndarray:
+    try:
+        transform = np.asarray(config[key], dtype=float)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"{config_path}: {key} must be a numeric 4x4 matrix") from error
+    if transform.shape != (4, 4) or not np.isfinite(transform).all():
+        raise ValueError(f"{config_path}: {key} must be a finite 4x4 matrix")
+    if not np.allclose(transform[3], [0.0, 0.0, 0.0, 1.0], atol=1e-8):
+        raise ValueError(f"{config_path}: {key} must have homogeneous bottom row [0, 0, 0, 1]")
+    rotation = transform[:3, :3]
+    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5):
+        raise ValueError(f"{config_path}: {key} rotation must be orthonormal")
+    if not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-5):
+        raise ValueError(f"{config_path}: {key} rotation determinant must be +1")
+    return transform
+
+
+def load_tip_kin(config_path: Path | str) -> tuple[np.ndarray, np.ndarray]:
+    """Load optical<-camera and camera<-gripper-tip transforms from JSON."""
+    config_path = Path(config_path).resolve()
+    try:
+        with config_path.open() as config_file:
+            config = json.load(config_file)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"failed to load extrinsics config {config_path}: {error}") from error
+    if not isinstance(config, dict) or config.get("schema_version") != 1:
+        raise ValueError(f"{config_path}: schema_version must be 1")
+    return (
+        _load_rigid_transform(config, "T_optical_camera", config_path),
+        _load_rigid_transform(config, "T_camera_gripper_tip", config_path),
+    )
+
+
+TIP_KIN = load_tip_kin(DEFAULT_EXTRINSICS_CONFIG)
 
 
 def load_poses(traj_path: Path) -> np.ndarray | None:
@@ -89,19 +113,24 @@ def load_K(cam_info_path: Path) -> np.ndarray | None:
     return K
 
 
-def project_future(poses: np.ndarray, t: int, K: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def project_future(
+    poses: np.ndarray,
+    t: int,
+    K: np.ndarray,
+    tip_kin: tuple[np.ndarray, np.ndarray] = TIP_KIN,
+) -> tuple[np.ndarray, np.ndarray]:
     """Project the gripper-tip path from the CURRENT frame t through the end into
     frame t's image (includes the current tip so the trail starts "now").
 
     Mirrors visualize_predictions.py: poses are treated as camera_link poses; the
-    relative motion T_rel = inv(poses[t]) @ poses[k] is composed with the hardcoded
-    camera->tip offset (TIP_KIN), giving the gripper tip in the current optical frame:
+    relative motion T_rel = inv(poses[t]) @ poses[k] is composed with the configured
+    camera-to-tip transforms, giving the gripper tip in the current optical frame:
         p_tip = (T_opt_cam @ T_rel @ T_cam_ee)[:3, 3]
     then projected with the (optical) color intrinsics K. Returns (px, py) for k=t..end
     in pixel coords (NaN where behind the camera).
     """
     T_t_inv = np.linalg.inv(poses[t])
-    T_opt_cam, T_cam_ee = TIP_KIN
+    T_opt_cam, T_cam_ee = tip_kin
     pts = np.empty((len(poses) - t, 3))
     for i, k in enumerate(range(t, len(poses))):
         T_rel = T_t_inv @ poses[k]
@@ -134,7 +163,8 @@ def _out_mp4_path(ep_dir: Path, out_dir: Path | None) -> Path:
 
 def render_episode_video(ep_dir: Path, fps: int, codec: str, dpi: int = 100,
                          out_dir: Path | None = None,
-                         badge: str | None = None, badge_color: str = "#2e7d32") -> bool:
+                         badge: str | None = None, badge_color: str = "#2e7d32",
+                         tip_kin: tuple[np.ndarray, np.ndarray] = TIP_KIN) -> bool:
     """Render one side-by-side traj video. Returns True on success.
 
     Writes to <out_dir>/<session>_<episode>.mp4 when out_dir is set (all videos in one
@@ -233,7 +263,7 @@ def render_episode_video(ep_dir: Path, fps: int, codec: str, dpi: int = 100,
             # RGB panel: project gripper-tip path (current..end) into the frame,
             # drawn as a green->red gradient with green start (current tip) + blue stop.
             if K is not None:
-                px, py = project_future(poses, t, K)
+                px, py = project_future(poses, t, K, tip_kin)
                 pts = np.column_stack([px, py])
                 segs = np.stack([pts[:-1], pts[1:]], axis=1) if len(pts) >= 2 else np.empty((0, 2, 2))
                 fut_lc.set_segments(segs)
@@ -271,7 +301,18 @@ def main(argv: list[str] | None = None) -> int:
                    help="Write ALL videos into this folder as <session>_<episode>.mp4 (default: <episode>/traj_sidebyside.mp4)")
     p.add_argument("--badge", default=None, help="Optional status badge text drawn top-left of the video")
     p.add_argument("--badge-color", default="#2e7d32", help="Badge background color (default green)")
+    p.add_argument(
+        "--extrinsics-config",
+        type=Path,
+        default=DEFAULT_EXTRINSICS_CONFIG,
+        help=f"Camera-to-gripper-tip JSON config (default: {DEFAULT_EXTRINSICS_CONFIG})",
+    )
     args = p.parse_args(argv)
+
+    try:
+        tip_kin = load_tip_kin(args.extrinsics_config)
+    except ValueError as error:
+        p.error(str(error))
 
     if not args.path.exists():
         print(f"not found: {args.path}", file=sys.stderr); return 1
@@ -295,8 +336,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_episodes and ok >= args.max_episodes:
             break
         print(f"[{done+1}/{len(eps)}] {ep.parent.name}/{ep.name}")
-        if render_episode_video(ep, args.fps, args.codec, out_dir=args.output,
-                                 badge=args.badge, badge_color=args.badge_color):
+        if render_episode_video(
+            ep,
+            args.fps,
+            args.codec,
+            out_dir=args.output,
+            badge=args.badge,
+            badge_color=args.badge_color,
+            tip_kin=tip_kin,
+        ):
             ok += 1
         done += 1
     print(f"Done: {ok} video(s) rendered.")
