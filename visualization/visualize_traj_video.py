@@ -177,6 +177,10 @@ def render_episode_video(ep_dir: Path, fps: int, codec: str, dpi: int = 100,
                  bbox=dict(boxstyle="round,pad=0.35", fc=badge_color, ec="black", lw=1.0))
 
     first = cv.imread(str(images[0]))
+    if first is None:
+        print(f"  skip {ep_dir.name}: failed to read {images[0]}")
+        plt.close(fig)
+        return False
     im_obj = ax_img.imshow(cv.cvtColor(first, cv.COLOR_BGR2RGB))
     ax_img.set_xticks([]); ax_img.set_yticks([])
     title = ax_img.set_title(f"{ep_dir.parent.name}/{ep_dir.name}  f0/{n}", fontsize=10)
@@ -218,6 +222,8 @@ def render_episode_video(ep_dir: Path, fps: int, codec: str, dpi: int = 100,
     try:
         for t in range(n):
             img = cv.imread(str(images[t]))
+            if img is None:
+                raise RuntimeError(f"failed to read image: {images[t]}")
             im_obj.set_data(cv.cvtColor(img, cv.COLOR_BGR2RGB))
             title.set_text(f"{ep_dir.parent.name}/{ep_dir.name}  f{t}/{n-1}")
             # 3D panel: revealed path up to t + current head

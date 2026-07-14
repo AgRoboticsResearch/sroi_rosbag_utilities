@@ -21,8 +21,11 @@
 
 跑 ORB-SLAM 前，对每个 episode 的 left_/right_ 涂黑夹爪梯形：
 ```bash
-python3 schemes_compare/mask_gripper_trapezoid.py <schemes或episode目录>
+python3 schemes_compare/mask_gripper_trapezoid.py <schemes/session/episode目录>
 ```
+输入 schemes 目录时读取 `episode_*/raw/`；输入普通 session 或单个 episode 时读取
+episode 根目录。掩膜结果统一写到 `episode_*/maskgripper/`，运行 ORB 时应把该子目录
+作为输入。
 梯形顶点（夹爪与相机刚性连接，画面里固定，只有手指开合；已跨两台设备验证通用）：
 - 左眼：[(236,292),(417,292),(525,467),(127,467)]（顶左→顶右→底右→底左）+ rows≥467 全宽黑
 - 右眼：[(182,292),(365,292),(444,467),(46,467)] + rows≥467 全宽黑
@@ -53,5 +56,6 @@ python3 schemes_compare/aggregate_schemes.py
 
 ## 注意
 - `T_CAM_EE`（相机→夹爪指尖变换，在 `visualization/visualize_traj_video.py`）是按本装置实测重标定的（指尖 +0.145m 前/−0.030m 下、pitch −30°）。换装置请核验绿点是否落夹爪中心。
-- 脚本里的数据路径是示例（默认 `/home/ss/data/1000_onesb_labpicking`），用 `MASK_DATA` 环境变量或改 `BASE` 适配你的机器。
+- 脚本里的数据路径是示例（默认 `/home/ss/data/1000_onesb_labpicking`）；可用 `MASK_DATA` 环境变量覆盖，`aggregate_schemes.py` 也接受 data-root 位置参数。
+- `run_orb_scheme.py` 默认使用 `~/code/ORB_SLAM3`；可用 `ORB_SLAM3_DIR` 或 `--orbslam-dir` 覆盖。
 - Vive 动捕在遮挡时会出错，不能盲信当真值；用前需识别并剔除被遮挡 episode。

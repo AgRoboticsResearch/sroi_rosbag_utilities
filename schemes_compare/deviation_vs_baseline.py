@@ -18,7 +18,13 @@ def loadt(ep, sch):
     t = ep / sch / "CameraTrajectoryTransformed.txt"
     if not t.exists():
         t = ep / sch / "CameraTrajectory.txt"
-    return ovv.load_kitti_positions(t) if t.exists() else None
+    if not t.exists():
+        return None
+    try:
+        points = ovv.load_kitti_positions(t)
+    except (OSError, ValueError):
+        return None
+    return points if len(points) else None
 
 
 def ninput(ep):
@@ -32,7 +38,7 @@ def ninput(ep):
 
 
 def dev(A, B):
-    if A is None or B is None:
+    if A is None or B is None or len(A) == 0 or len(B) == 0:
         return None
     if len(A) != len(B):
         L = min(len(A), len(B))
@@ -49,9 +55,8 @@ rows = []
 for ep in eps:
     ni = ninput(ep)
     base = loadt(ep, "maskhalf"); mg = loadt(ep, "maskgripper"); raw = loadt(ep, "raw")
-    if base is None:
-        continue
-    rows.append(dict(ep=ep.name, nin=ni, mh_n=len(base), mg_n=len(mg) if mg is not None else 0,
+    rows.append(dict(ep=ep.name, nin=ni, mh_n=len(base) if base is not None else 0,
+                     mg_n=len(mg) if mg is not None else 0,
                      raw_n=len(raw) if raw is not None else 0, d_mg=dev(mg, base), d_raw=dev(raw, base),
                      mh_bbox=bbox(base), mg_bbox=bbox(mg)))
 
@@ -63,21 +68,28 @@ with open(csvp, "w", newline="") as f:
                 "rmse_mg_vs_mh_mm", "rmse_raw_vs_mh_mm", "mh_bbox_cm", "mg_bbox_cm"])
     for r in rows:
         w.writerow([r["ep"], r["nin"], r["mh_n"], r["mg_n"], r["raw_n"],
-                    f"{r['d_mg']*1000:.1f}" if r["d_mg"] else "NA",
-                    f"{r['d_raw']*1000:.1f}" if r["d_raw"] else "NA",
+                    f"{r['d_mg']*1000:.1f}" if r["d_mg"] is not None else "NA",
+                    f"{r['d_raw']*1000:.1f}" if r["d_raw"] is not None else "NA",
                     f"{r['mh_bbox']*100:.1f}", f"{r['mg_bbox']*100:.1f}"])
 
 comp = lambda r, k: (100 * r[k] / r["nin"]) if r["nin"] else 0
 mh_c = np.array([comp(r, "mh_n") for r in rows])
 mg_c = np.array([comp(r, "mg_n") for r in rows])
 print(f"{schemes.name}: n={len(rows)}  (thr={thr}mm)")
-print(f"  跟踪完整度: maskhalf mean={mh_c.mean():.0f}% (丢帧={int((mh_c < 100).sum())}) | "
-      f"maskgripper mean={mg_c.mean():.0f}% (丢帧={int((mg_c < 100).sum())})")
+if rows:
+    print(f"  跟踪完整度: maskhalf mean={mh_c.mean():.0f}% (丢帧={int((mh_c < 100).sum())}) | "
+          f"maskgripper mean={mg_c.mean():.0f}% (丢帧={int((mg_c < 100).sum())})")
+else:
+    print("  跟踪完整度: no episodes")
 lost = [r for r in rows if r["nin"] and r["mh_n"] < r["nin"] and r["mg_n"] >= r["nin"]]
 print(f"  ★ maskhalf丢帧 而 maskgripper跟全 的 episode: {len(lost)} 个")
 for r in lost:
     print(f"      {r['ep']}: maskhalf {r['mh_n']}/{r['nin']}  maskgripper {r['mg_n']}/{r['nin']}")
-mg = np.array([r["d_mg"] for r in rows if r["d_mg"]])
-ra = np.array([r["d_raw"] for r in rows if r["d_raw"]])
-print(f"  偏差: maskgripper vs maskhalf med={np.median(mg)*1000:.1f}mm | raw vs maskhalf med={np.median(ra)*1000:.1f}mm")
+mg = np.array([r["d_mg"] for r in rows if r["d_mg"] is not None])
+ra = np.array([r["d_raw"] for r in rows if r["d_raw"] is not None])
+mg_med = np.median(mg) * 1000 if len(mg) else float("nan")
+ra_med = np.median(ra) * 1000 if len(ra) else float("nan")
+over_thr = int((mg * 1000 > thr).sum()) if len(mg) else 0
+print(f"  偏差: maskgripper vs maskhalf med={mg_med:.1f}mm (>{thr:g}mm: {over_thr}) | "
+      f"raw vs maskhalf med={ra_med:.1f}mm")
 print(f"CSV: {csvp}")

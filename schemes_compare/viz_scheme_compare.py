@@ -26,18 +26,21 @@ def render_episode(ep_dir, schemes, fps, codec, out_mp4):
         t = sd / "CameraTrajectoryTransformed.txt"
         if not t.exists():
             t = sd / "CameraTrajectory.txt"
-        p = vtv.load_poses(t)
-        if p is None or K is None:
-            return False
-        poses_per[sch] = p
-    n = min(len(color), *[len(poses_per[s]) for s in schemes])
+        poses_per[sch] = vtv.load_poses(t)
+    if K is None or not color or not any(p is not None for p in poses_per.values()):
+        return False
+    n = len(color)
     if n < 2:
         return False
     color = color[:n]
     for s in schemes:
-        poses_per[s] = poses_per[s][:n]
+        if poses_per[s] is not None:
+            poses_per[s] = poses_per[s][:n]
 
-    first = cv2.cvtColor(cv2.imread(str(color[0])), cv2.COLOR_BGR2RGB)
+    first_bgr = cv2.imread(str(color[0]))
+    if first_bgr is None:
+        raise RuntimeError(f"failed to read image: {color[0]}")
+    first = cv2.cvtColor(first_bgr, cv2.COLOR_BGR2RGB)
     H, W = first.shape[:2]
     nS = len(schemes)
     fig, axes = plt.subplots(1, nS, figsize=(4.4 * nS, 4.3), dpi=100)
@@ -46,7 +49,9 @@ def render_episode(ep_dir, schemes, fps, codec, out_mp4):
     im_objs, fut_lcs, start_dots, stop_dots = [], [], [], []
     for ax, sch in zip(axes, schemes):
         im_objs.append(ax.imshow(first)); ax.set_xticks([]); ax.set_yticks([])
-        ax.set_title(sch, fontsize=12, fontweight="bold")
+        tracked = len(poses_per[sch]) if poses_per[sch] is not None else 0
+        ax.set_title(f"{sch} ({tracked}/{len(color)} frames)",
+                     fontsize=12, fontweight="bold")
         lc = LineCollection([], linewidths=2.0, capstyle="round", zorder=4)
         ax.add_collection(lc); fut_lcs.append(lc)
         start_dots.append(ax.scatter([], [], c=["#00FF00"], s=45, zorder=6, edgecolors="black", linewidths=0.4))
@@ -62,16 +67,27 @@ def render_episode(ep_dir, schemes, fps, codec, out_mp4):
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
         for t in range(n):
-            img = cv2.cvtColor(cv2.imread(str(color[t])), cv2.COLOR_BGR2RGB)
+            frame = cv2.imread(str(color[t]))
+            if frame is None:
+                raise RuntimeError(f"failed to read image: {color[t]}")
+            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             for i, sch in enumerate(schemes):
                 im_objs[i].set_data(img)
-                px, py = vtv.project_future(poses_per[sch], t, K)
-                pts = np.column_stack([px, py])
-                segs = np.stack([pts[:-1], pts[1:]], axis=1) if len(pts) >= 2 else np.empty((0, 2, 2))
-                fut_lcs[i].set_segments(segs); fut_lcs[i].set_colors(vtv._green_red_gradient(len(segs)))
-                start_dots[i].set_offsets([pts[0]] if len(pts) else [[np.nan, np.nan]])
-                spt = pts[-1] if len(pts) and np.isfinite(pts[-1]).all() else np.array([np.nan, np.nan])
-                stop_dots[i].set_offsets([spt])
+                if poses_per[sch] is not None and t < len(poses_per[sch]):
+                    px, py = vtv.project_future(poses_per[sch], t, K)
+                    pts = np.column_stack([px, py])
+                    segs = (np.stack([pts[:-1], pts[1:]], axis=1)
+                            if len(pts) >= 2 else np.empty((0, 2, 2)))
+                    fut_lcs[i].set_segments(segs)
+                    fut_lcs[i].set_colors(vtv._green_red_gradient(len(segs)))
+                    start_dots[i].set_offsets([pts[0]] if len(pts) else [[np.nan, np.nan]])
+                    spt = (pts[-1] if len(pts) and np.isfinite(pts[-1]).all()
+                           else np.array([np.nan, np.nan]))
+                    stop_dots[i].set_offsets([spt])
+                else:
+                    fut_lcs[i].set_segments([])
+                    start_dots[i].set_offsets([[np.nan, np.nan]])
+                    stop_dots[i].set_offsets([[np.nan, np.nan]])
             fig.canvas.draw()
             proc.stdin.write(np.asarray(fig.canvas.buffer_rgba())[..., :3].tobytes())
     except Exception:
@@ -85,7 +101,7 @@ def main():
     ap.add_argument("schemes_dir")
     ap.add_argument("--schemes", nargs="+", default=["raw", "maskhalf", "maskgripper"])
     ap.add_argument("--fps", type=int, default=20)
-    ap.add_argument("--codec", default="libx264")
+    ap.add_argument("--codec", default="libopenh264")
     args = ap.parse_args()
     sd = Path(args.schemes_dir)
     outdir = sd / "_compare"   # 放进 schemes 里，整洁
