@@ -2,23 +2,40 @@
 # Batch process ORB_SLAM3 for episode folders
 #
 # Usage:
-#   ./orbslam_batch_portable.sh <session_dir> <orb_slam_dir> [skip_existing] [visualization]
+#   ./orbslam_batch_local.sh <session_dir> <orb_slam_dir> [skip_existing] [visualization] [--mask-config PATH]
 #
 # Examples:
-#   ./orbslam_batch_portable.sh /data/20260521_153031-png ~/code/ORB_SLAM3
-#   ./orbslam_batch_portable.sh /data/20260521_153031-png ~/code/ORB_SLAM3 true false
+#   ./orbslam_batch_local.sh /data/20260521_153031-png ~/code/ORB_SLAM3
+#   ./orbslam_batch_local.sh /data/20260521_153031-png ~/code/ORB_SLAM3 true false
+#   ./orbslam_batch_local.sh /data/20260521_153031-png ~/code/ORB_SLAM3 true false --mask-config configs/gripper_mask_sroi_v2_d405.json
 
 SESSION_DIR="${1:-}"
 ORB_SLAM_DIR="${2:-}"
 SKIP_EXIST="${3:-true}"
 VISUALIZATION="${4:-false}"
+MASK_CONFIG=""
+if [ -n "${5:-}" ]; then
+    if [ "$5" != "--mask-config" ] || [ -z "${6:-}" ] || [ -n "${7:-}" ]; then
+        echo "Error: optional mask syntax is --mask-config PATH" >&2
+        exit 1
+    fi
+    MASK_CONFIG="$6"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/orbslam_mask_helpers.sh"
 
 if [ -z "$SESSION_DIR" ] || [ -z "$ORB_SLAM_DIR" ]; then
-    echo "Usage: $0 <session_dir> <orb_slam_dir> [skip_existing] [visualization]"
+    echo "Usage: $0 <session_dir> <orb_slam_dir> [skip_existing] [visualization] [--mask-config PATH]"
     echo "  session_dir:    path containing episode_* folders"
     echo "  orb_slam_dir:   path to ORB_SLAM3 installation"
     echo "  skip_existing:  \"true\" to skip episodes with CameraTrajectory.txt (default: true)"
     echo "  visualization:  \"true\" to enable GUI (default: false)"
+    echo "  --mask-config:  optional gripper-mask JSON; omitted means no masking"
+    exit 1
+fi
+
+if ! sroi_configure_mask "$MASK_CONFIG"; then
     exit 1
 fi
 
@@ -45,6 +62,7 @@ echo "Session dir:   $SESSION_DIR"
 echo "ORB_SLAM3 dir: $ORB_SLAM_DIR"
 echo "Skip existing: $SKIP_EXIST"
 echo "Visualization: $VISUALIZATION"
+echo "Mask config:   ${SROI_MASK_CONFIG:-none}"
 echo ""
 
 EPISODE_FOLDERS=()
@@ -89,15 +107,22 @@ for folder in "${EPISODE_FOLDERS[@]}"; do
         cfg="$ORB_SLAM_DIR/Examples/Stereo/RealSense_D405.yaml"
     fi
 
-    "$STEREO_KITTI" "$VOCAB" "$cfg" "$folder" "$VISUALIZATION"
+    if ! sroi_prepare_orb_input "$folder"; then
+        echo "  Error: failed to prepare masked ORB input"
+        ERROR=$((ERROR + 1))
+        continue
+    fi
 
-    if [ -f "$outfile" ]; then
+    "$STEREO_KITTI" "$VOCAB" "$cfg" "$SROI_ORB_INPUT_DIR" "$VISUALIZATION"
+
+    if sroi_collect_trajectory "$folder"; then
         echo "  Done"
         SUCCESS=$((SUCCESS + 1))
     else
         echo "  Error: no CameraTrajectory.txt generated"
         ERROR=$((ERROR + 1))
     fi
+    sroi_cleanup_mask_input
 done
 
 echo ""

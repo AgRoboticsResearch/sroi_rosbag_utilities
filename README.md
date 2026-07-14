@@ -50,9 +50,28 @@ cd ~/code/ORB_SLAM3
     ~/Desktop/435/20260520_143052-png/episode_001/orb_slam_realsense_d405.yaml \
     ~/Desktop/435/20260520_143052-png/episode_001 false
 
-# Batch all episodes
+# Batch all episodes (unchanged behavior: no mask)
 ./batches/orbslam_batch_d405.sh ~/Desktop/435/20260520_143052-png
+
+# Opt in to a rig-specific gripper mask before ORB-SLAM
+./batches/orbslam_batch_d405.sh ~/Desktop/435/20260520_143052-png true false \
+    --mask-config /codes/sroi_rosbag_utilities/configs/gripper_mask_sroi_v2_d405.json
+
+# Host install with the same optional mask
+batches/orbslam_batch_local.sh ~/Desktop/435/20260520_143052-png ~/code/ORB_SLAM3 \
+    true false --mask-config configs/gripper_mask_sroi_v2_d405.json
 ```
+
+When `--mask-config` is provided, the batch creates a temporary masked copy of each
+episode's stereo frames, runs ORB-SLAM3 on that copy, saves `CameraTrajectory.txt` back
+to the original episode, and removes the temporary images. Original recordings are
+never modified. Omitting the option preserves the previous unmasked behavior.
+
+Mask JSON files define the expected image size, per-eye polygons, and an optional
+full-width `black_below_row`. Use a different config for a different gripper/camera
+assembly; `configs/gripper_mask_sroi_v2_d405.json` contains the current 640x480 D405
+geometry. See [`doc/rig_configs.md`](doc/rig_configs.md) for the schema,
+validation rules, temporary-file behavior, and instructions for adding another rig.
 
 ### Step 4: Transform Trajectory
 
@@ -90,6 +109,20 @@ sanity-check the range before trusting the normalized `gripper_distances.txt` fi
 Add `--median_filter 3` (must be odd) to smooth single-frame AprilTag detection noise
 in the raw distances before the min/max is computed and episodes are normalized.
 Default is `1` (no filtering).
+
+### Optional: Trajectory projection video
+
+The camera-to-gripper-tip transforms used by the projection overlay are loaded from a
+standalone JSON config:
+
+```bash
+python visualization/visualize_traj_video.py /path/to/session-png --recursive \
+    --extrinsics-config configs/camera_gripper_extrinsics_sroi_v2_d405.json
+```
+
+Use a different extrinsics config for a different camera/gripper assembly.
+The matrix convention and calibration checks are documented in
+[`doc/rig_configs.md`](doc/rig_configs.md).
 
 ### Step 6: QC and Convert to LeRobot Dataset
 
