@@ -1,61 +1,102 @@
-# schemes_compare — 遮罩方案对比 (raw / maskhalf / maskgripper)
+# Mask scheme comparison (raw / maskhalf / maskgripper)
 
-对比三种 ORB-SLAM3 前处理遮罩方案对轨迹还原的影响，并给出生产方案。
+This directory compares three pre-ORB-SLAM3 masking strategies and contains the
+standalone tooling used for the experiment.
 
-## 结论（287 集，4 个 Vive + 2 个无 Vive session 验证）
+## Pipeline integration status
 
-| 方案 | 说明 | 结果 |
+**The gripper mask is not currently integrated into the canonical pipeline.** The
+normal `record_realsense.py -> decode_videos.py -> batches/orbslam_batch_*.sh`
+workflow still runs ORB-SLAM3 on the unmasked stereo images at the episode root.
+`build_session_schemes.sh` and the other scripts in this directory form a separate
+comparison workflow.
+
+The masker writes derived images to `episode_*/maskgripper/`. The existing ORB batch
+scripts do not automatically discover that nested directory. Use
+`run_orb_scheme.py` for a schemes tree, or explicitly pass the masked directory to
+ORB-SLAM3. Making maskgripper the production default requires a separate integration
+change to the canonical ORB batch scripts and top-level pipeline documentation.
+
+## Preliminary experiment findings
+
+The original experiment covered 287 episodes from four Vive sessions and two sessions
+without Vive. It reported the following results:
+
+| Scheme | Description | Reported result |
 |---|---|---|
-| `raw` | 不遮 | 大量坍缩（轨迹缩成真实运动零头），**不可用** |
-| `maskhalf` | 底部 38/97 涂黑 (cutoff=292) | 修好坍缩，但偶有跟丢 |
-| `maskgripper` | **只遮夹爪梯形**（左右红外各一套顶点 + 底部 13 行） | **质量等价 + 跟踪更稳** |
+| `raw` | No mask | Frequent trajectory collapse |
+| `maskhalf` | Black out the bottom 38/97 of the image (cutoff 292) | Prevented collapse, with occasional tracking loss |
+| `maskgripper` | Per-eye gripper trapezoid plus the bottom 13 rows | Similar quality with fewer reported tracking losses |
 
-**数据**（以 maskhalf 为基准，纯方法间对比，不依赖 Vive）：
-- 质量：两边都跟全的 278 集，maskgripper vs maskhalf 偏差中位 **0.5mm**（亚毫米，等价）。
-- 稳健性：maskhalf 跟丢 9 集，maskgripper 跟丢 5 集；**maskgripper 救回 4 集** maskhalf 跟丢的。
-- → **生产默认用 `maskgripper`**（保留更多特征 → ORB 不易丢跟踪；额外成本仅涂黑步骤略复杂）。
+- For 278 episodes where both masked schemes tracked fully, the reported median
+  maskgripper-versus-maskhalf deviation was 0.5 mm.
+- The original summary reported 9 maskhalf losses, 5 maskgripper losses, and 4 episodes
+  recovered by maskgripper.
 
-根因：画面底部的夹爪 + AprilTag 是高对比、会动的"毒特征"，破坏 ORB-SLAM 静态场景假设。基线/标定没问题（D405 18mm 基线本就对）。
+PR #8 fixed accounting bugs that previously omitted complete maskhalf failures and
+zero-valued results. Re-run the comparison before treating the historical counts above
+as final.
 
-## 生产用法（处理新数据）
+The working hypothesis is that the gripper and AprilTags at the bottom of the frame
+produce high-contrast moving features that violate ORB-SLAM's static-scene assumption.
 
-跑 ORB-SLAM 前，对每个 episode 的 left_/right_ 涂黑夹爪梯形：
+## Manual masking usage
+
+Apply the per-eye gripper mask before running ORB-SLAM:
 ```bash
-python3 schemes_compare/mask_gripper_trapezoid.py <schemes/session/episode目录>
+python3 schemes_compare/mask_gripper_trapezoid.py <schemes/session/episode-directory>
 ```
-输入 schemes 目录时读取 `episode_*/raw/`；输入普通 session 或单个 episode 时读取
-episode 根目录。掩膜结果统一写到 `episode_*/maskgripper/`，运行 ORB 时应把该子目录
-作为输入。
-梯形顶点（夹爪与相机刚性连接，画面里固定，只有手指开合；已跨两台设备验证通用）：
-- 左眼：[(236,292),(417,292),(525,467),(127,467)]（顶左→顶右→底右→底左）+ rows≥467 全宽黑
-- 右眼：[(182,292),(365,292),(444,467),(46,467)] + rows≥467 全宽黑
-- 左眼夹爪居中→对称；右眼因立体视差左移 ~48px，故左右眼顶点不同。
 
-## 完整对比流程（复现 mg≥mh）
+For a schemes directory, the script reads `episode_*/raw/`. For a normal session or
+single episode, it reads images from the episode root. Output is always written to
+`episode_*/maskgripper/`; it does not overwrite the source images.
+
+Mask geometry for the validated 640x480 D405 rigs:
+
+- Left eye: [(236,292), (417,292), (525,467), (127,467)], plus rows 467 and below.
+- Right eye: [(182,292), (365,292), (444,467), (46,467)], plus rows 467 and below.
+- The right-eye polygon is shifted left by stereo disparity.
+
+## Full comparison workflow
 
 ```bash
-# 1) 一个 session 全量做成 schemes(raw/maskhalf/maskgripper 各跑 ORB)
+# 1) Build raw/maskhalf/maskgripper trees and run ORB for each scheme
 MASK_DATA=/path/to/data bash schemes_compare/build_session_schemes.sh 20260709_XXXXXX
-# 2) 坐标变换(投影回RGB必需)
+
+# 2) Transform each scheme trajectory for RGB projection
 python3 transform_trajectory.py <session>-schemes --recursive
-# 3) 三面板对比视频(每episode raw|maskhalf|maskgripper 并排)
+
+# 3) Render side-by-side comparison videos
 python3 schemes_compare/viz_scheme_compare.py <session>-schemes
-# 4) 完整度+偏差(以maskhalf为基准)
+
+# 4) Calculate completeness and deviation against maskhalf
 python3 schemes_compare/deviation_vs_baseline.py <session>-schemes
-# 5) 跨session总表
-python3 schemes_compare/aggregate_schemes.py
+
+# 5) Aggregate results across sessions
+python3 schemes_compare/aggregate_schemes.py /path/to/data
 ```
-输出在 `<session>-schemes/_compare/`（视频 + deviation.csv）。
 
-## 文件说明
-- `mask_gripper_trapezoid.py` — **生产掩膜**（mg）。`mask_session.py` — maskhalf（cutoff=292，对比用）。
-- `schemes_init.py` / `build_session_schemes.sh` / `run_orb_scheme.py` — schemes 结构搭建 + 批量 ORB。
-- `viz_scheme_compare.py` — 三面板对比视频（复用 `visualization/visualize_traj_video.py` 的投影）。
-- `deviation_vs_baseline.py` / `aggregate_schemes.py` — 完整度(输出帧/输入帧，丢帧=失败) + 偏差分析。
-- `orb_vs_vive.py` — ORB vs Vive 动捕真值 Sim3 对齐（Vive 准的时候用）。
+Outputs are written under `<session>-schemes/_compare/`.
 
-## 注意
-- `T_CAM_EE`（相机→夹爪指尖变换，在 `visualization/visualize_traj_video.py`）是按本装置实测重标定的（指尖 +0.145m 前/−0.030m 下、pitch −30°）。换装置请核验绿点是否落夹爪中心。
-- 脚本里的数据路径是示例（默认 `/home/ss/data/1000_onesb_labpicking`）；可用 `MASK_DATA` 环境变量覆盖，`aggregate_schemes.py` 也接受 data-root 位置参数。
-- `run_orb_scheme.py` 默认使用 `~/code/ORB_SLAM3`；可用 `ORB_SLAM3_DIR` 或 `--orbslam-dir` 覆盖。
-- Vive 动捕在遮挡时会出错，不能盲信当真值；用前需识别并剔除被遮挡 episode。
+## Files
+
+- `mask_gripper_trapezoid.py`: creates the maskgripper images.
+- `mask_session.py`: creates the maskhalf comparison images.
+- `schemes_init.py`: builds the per-episode schemes layout.
+- `build_session_schemes.sh`: runs the standalone end-to-end comparison workflow.
+- `run_orb_scheme.py`: runs ORB-SLAM3 for one scheme.
+- `viz_scheme_compare.py`: renders multi-scheme comparison videos.
+- `deviation_vs_baseline.py`: computes per-session completeness and deviation.
+- `aggregate_schemes.py`: aggregates comparison CSV files across sessions.
+- `orb_vs_vive.py`: aligns ORB trajectories with Vive motion capture.
+
+## Notes
+
+- `T_CAM_EE` in `visualization/visualize_traj_video.py` was measured for one rig.
+  Verify the projected green point on every different camera/gripper assembly.
+- The default data root is `/home/ss/data/1000_onesb_labpicking`. Override it with
+  `MASK_DATA`, or pass a data-root argument to `aggregate_schemes.py`.
+- `run_orb_scheme.py` defaults to `~/code/ORB_SLAM3`. Override it with
+  `ORB_SLAM3_DIR` or `--orbslam-dir`.
+- Vive motion capture can become unreliable under occlusion; exclude occluded episodes
+  before treating it as a reference.

@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""方案3 掩膜：夹爪梯形(整段固定，左右红外各一套顶点) + 底部467行及以下全黑。
-读 <schemes>/episode_NNN/raw/{left_,right_} 原图 → 写 maskgripper/{left_,right_}。
-用法: python3 mask_gripper_trapezoid.py <schemes_dir>
+"""Scheme 3 mask: a fixed gripper trapezoid per stereo eye plus a black bottom strip.
+Accepts a schemes/session directory or one episode directory. Reads from raw/ when
+present, otherwise from the episode root, and writes to episode/maskgripper/.
 """
 import sys, os
 from pathlib import Path
 import cv2
 import numpy as np
 
-# 顺序: 顶左 → 顶右 → 底右 → 底左 (凸梯形, 不自交)
+# Vertex order: top-left -> top-right -> bottom-right -> bottom-left (convex)
 LEFT_POLY  = np.array([[(236, 292), (417, 292), (525, 467), (127, 467)]], dtype=np.int32)
 RIGHT_POLY = np.array([[(182, 292), (365, 292), (444, 467), ( 46, 467)]], dtype=np.int32)
-BOTTOM_ROW = 467  # 该行及以下全部涂黑
+BOTTOM_ROW = 467  # Black out this row and everything below it
 
 
 def apply_mask(img, poly):
     if img is None:
         raise ValueError("cannot mask an unreadable image")
     out = img.copy()
-    cv2.fillPoly(out, poly, 0)     # 梯形涂黑
-    out[BOTTOM_ROW:] = 0           # 底部条带全宽涂黑
+    cv2.fillPoly(out, poly, 0)     # Black out the gripper trapezoid
+    out[BOTTOM_ROW:] = 0           # Black out the full-width bottom strip
     return out
 
 
@@ -54,4 +54,4 @@ for ep in eps:
             raise RuntimeError(f"failed to write image: {output}")
     nl, nr = len(left), len(right)
     print(f"  {ep.name}: {nl}L {nr}R", flush=True)
-print(f"done → {input_path} ({len(eps)} episodes)")
+print(f"done -> {input_path} ({len(eps)} episodes)")

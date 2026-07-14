@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""把整个 session 所有 episode 的图像底部涂黑。原图不动，写到 -mask<cutoff>/。
+"""Mask the bottom of every image in every episode of a session.
 
-用法: python mask_session.py <png_session> <cutoff_row>
-例:   python mask_session.py .../20260709_144418-png 292
-      (第 292 行及以下涂黑；对应去掉底部 38/97 ≈ 39%)
+The source images are unchanged; output is written to -mask<cutoff>/.
+Usage: python mask_session.py <png_session> <cutoff_row>
+Example: python mask_session.py .../20260709_144418-png 292
 """
 import sys, shutil
 from pathlib import Path
@@ -15,7 +15,7 @@ def main():
     cutoff = int(sys.argv[2])
     dst = src.parent / f"{src.name}-mask{cutoff}"
     eps = sorted(d for d in src.iterdir() if d.is_dir() and d.name.startswith("episode_"))
-    print(f"{src.name}: {len(eps)} episodes, cutoff={cutoff} (第{cutoff}行及以下涂黑) → {dst.name}")
+    print(f"{src.name}: {len(eps)} episodes, masking rows {cutoff} and below -> {dst.name}")
     for i, ep in enumerate(eps, 1):
         d = dst / ep.name
         d.mkdir(parents=True, exist_ok=True)
@@ -32,7 +32,7 @@ def main():
                 img[cutoff:, ...] = 0
                 cv2.imwrite(str(d / p.name), img)
         print(f"  [{i}/{len(eps)}] {ep.name}", flush=True)
-    print(f"done → {dst}")
+    print(f"done -> {dst}")
 
 
 if __name__ == "__main__":

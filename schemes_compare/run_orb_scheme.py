@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""对 schemes 结构里的某个方案子文件夹批量跑 ORB-SLAM3。
-读 <schemes>/episode_NNN/<scheme>/ 的 left_/right_(+symlink 的 yaml/times)，跑 stereo_kitti，
-轨迹存到该方案子文件夹。已有 CameraTrajectory.txt 则跳过。
-用法: python3 run_orb_scheme.py <schemes_dir> <scheme_name>   例: ... 144418-schemes maskgripper
+"""Run ORB-SLAM3 in batch for one scheme in a schemes tree.
+Reads stereo images plus linked YAML/timestamps from each episode scheme directory.
+Trajectories are stored in that directory; existing trajectories are skipped.
+Usage: run_orb_scheme.py <schemes_dir> <scheme_name> [--orbslam-dir PATH]
 """
-import argparse, os, sys, subprocess
+import argparse, os, subprocess
 from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -30,10 +30,10 @@ ok = skip = fail = 0
 for i, ep in enumerate(eps, 1):
     sd = ep / scheme
     if not sd.exists() or not (sd / "left_000000.png").exists():
-        print(f"[{i}/{len(eps)}] {ep.name}/{scheme}: 无图像，跳过", flush=True); skip += 1; continue
+        print(f"[{i}/{len(eps)}] {ep.name}/{scheme}: no images, skipping", flush=True); skip += 1; continue
     traj = sd / "CameraTrajectory.txt"
     if traj.exists():
-        print(f"[{i}/{len(eps)}] {ep.name}/{scheme}: 已有轨迹，跳过", flush=True); skip += 1; continue
+        print(f"[{i}/{len(eps)}] {ep.name}/{scheme}: trajectory exists, skipping", flush=True); skip += 1; continue
     cfg = sd / "orb_slam_realsense_d405.yaml"
     if not cfg.is_file():
         print(f"[{i}/{len(eps)}] {ep.name}/{scheme}: missing config {cfg}", flush=True)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""以 maskhalf 为基准，对比 maskgripper/raw 的：① 轨迹偏差(刚体RMSE) ② 跟踪完整度(输出帧/输入帧)。
-找 maskhalf 丢帧而 maskgripper 跟全 的 episode(说明遮夹爪更稳)。无需 Vive。
-用法: python deviation_vs_baseline.py <schemes_dir> [thr_mm=15]
+"""Compare maskgripper/raw against maskhalf using rigid RMSE and tracking completeness.
+Reports episodes where maskhalf loses frames but maskgripper tracks the full sequence.
+Usage: deviation_vs_baseline.py <schemes_dir> [threshold_mm=15]
 """
 import sys, csv
 from pathlib import Path
@@ -77,12 +77,12 @@ mh_c = np.array([comp(r, "mh_n") for r in rows])
 mg_c = np.array([comp(r, "mg_n") for r in rows])
 print(f"{schemes.name}: n={len(rows)}  (thr={thr}mm)")
 if rows:
-    print(f"  跟踪完整度: maskhalf mean={mh_c.mean():.0f}% (丢帧={int((mh_c < 100).sum())}) | "
-          f"maskgripper mean={mg_c.mean():.0f}% (丢帧={int((mg_c < 100).sum())})")
+    print(f"  completeness: maskhalf mean={mh_c.mean():.0f}% (losses={int((mh_c < 100).sum())}) | "
+          f"maskgripper mean={mg_c.mean():.0f}% (losses={int((mg_c < 100).sum())})")
 else:
-    print("  跟踪完整度: no episodes")
+    print("  completeness: no episodes")
 lost = [r for r in rows if r["nin"] and r["mh_n"] < r["nin"] and r["mg_n"] >= r["nin"]]
-print(f"  ★ maskhalf丢帧 而 maskgripper跟全 的 episode: {len(lost)} 个")
+print(f"  maskhalf lost frames while maskgripper tracked fully: {len(lost)} episode(s)")
 for r in lost:
     print(f"      {r['ep']}: maskhalf {r['mh_n']}/{r['nin']}  maskgripper {r['mg_n']}/{r['nin']}")
 mg = np.array([r["d_mg"] for r in rows if r["d_mg"] is not None])
@@ -90,6 +90,6 @@ ra = np.array([r["d_raw"] for r in rows if r["d_raw"] is not None])
 mg_med = np.median(mg) * 1000 if len(mg) else float("nan")
 ra_med = np.median(ra) * 1000 if len(ra) else float("nan")
 over_thr = int((mg * 1000 > thr).sum()) if len(mg) else 0
-print(f"  偏差: maskgripper vs maskhalf med={mg_med:.1f}mm (>{thr:g}mm: {over_thr}) | "
+print(f"  deviation: maskgripper vs maskhalf median={mg_med:.1f}mm (>{thr:g}mm: {over_thr}) | "
       f"raw vs maskhalf med={ra_med:.1f}mm")
 print(f"CSV: {csvp}")

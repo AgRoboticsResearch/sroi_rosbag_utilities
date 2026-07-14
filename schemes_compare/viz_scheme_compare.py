@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""多方案对比视频：每 episode 横排 N 个 RGB 面板(每方案一个)，叠该方案的投影指尖路径
-(绿→红 + 绿当前点 + 蓝终点)，动画化，按 episode 序号拼成 ALL_compare.mp4。
-需先 transform 各方案轨迹(投影按 camera_link 系)。
-用法: python3 viz_scheme_compare.py <schemes_dir> [--schemes raw maskhalf maskgripper]
+"""Render an N-panel RGB comparison video for each episode, one panel per scheme.
+Each panel overlays the projected fingertip path from green to red, with a green current
+point and blue endpoint. Episode videos are concatenated into ALL_compare.mp4.
+Transform all trajectories first. Usage: viz_scheme_compare.py <schemes_dir> [--schemes ...]
 """
 import sys, argparse, subprocess
 from pathlib import Path
@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "visualization"))
-import visualize_traj_video as vtv   # 复用 load_poses/load_K/project_future/TIP_KIN/_green_red_gradient
+import visualize_traj_video as vtv  # Reuse trajectory loading and projection helpers
 
 
 def render_episode(ep_dir, schemes, fps, codec, out_mp4):
@@ -104,10 +104,10 @@ def main():
     ap.add_argument("--codec", default="libopenh264")
     args = ap.parse_args()
     sd = Path(args.schemes_dir)
-    outdir = sd / "_compare"   # 放进 schemes 里，整洁
+    outdir = sd / "_compare"  # Keep comparison output inside the schemes tree
     outdir.mkdir(exist_ok=True)
     eps = sorted(d for d in sd.iterdir() if d.is_dir() and d.name.startswith("episode_"))
-    print(f"{sd.name}: {len(eps)} episodes × {args.schemes} → {outdir}", flush=True)
+    print(f"{sd.name}: {len(eps)} episodes x {args.schemes} -> {outdir}", flush=True)
     ok = 0
     for i, ep in enumerate(eps, 1):
         mp4 = outdir / f"{ep.name}.mp4"

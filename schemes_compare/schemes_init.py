@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""把已有 raw + maskhalf 结果整理进干净的 schemes 结构（每个 episode 下按方案分子文件夹）。
-内参/times/彩色在 episode 根共享；每个方案子文件夹放自己的 left_/right_ 图像 + 轨迹，
-并 symlink 共享的 times.txt + yaml 进来让子目录对 ORB 自洽。
+"""Arrange existing raw and maskhalf outputs into a clean schemes tree.
+Shared intrinsics, timestamps, and color frames stay at the episode root. Each scheme
+subdirectory contains its own stereo images and trajectories, with symlinks to shared
+times.txt and YAML files.
 
-用法: python schemes_init.py <src_png> <src_mask292> <dst_schemes>
+Usage: schemes_init.py <src_png> <src_mask292> <dst_schemes>
 """
 import os, shutil, sys
 from pathlib import Path
@@ -26,7 +27,7 @@ def populate(sub_dir: Path, img_src: Path, traj_src: Path):
         s = traj_src / t
         if s.exists() and not (sub_dir / t).exists():
             shutil.copy2(s, sub_dir / t)
-    for shared in ["times.txt", "orb_slam_realsense_d405.yaml"]:   # symlink 共享文件进子目录
+    for shared in ["times.txt", "orb_slam_realsense_d405.yaml"]:  # Link shared files
         link = sub_dir / shared
         if not link.exists():
             os.symlink(f"../{shared}", link)
@@ -44,4 +45,4 @@ for ep in eps:
         shutil.copy2(c, root / c.name)
     populate(root / "raw", src_png / ep, src_png / ep)
     populate(root / "maskhalf", src_mask / ep, src_mask / ep)
-print(f"done → {dst} ({len(eps)} episodes)")
+print(f"done -> {dst} ({len(eps)} episodes)")
