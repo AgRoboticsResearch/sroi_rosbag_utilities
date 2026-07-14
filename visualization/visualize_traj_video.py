@@ -43,11 +43,15 @@ T_OPT_CAM = np.array([
     [0.9999999999999993, 2.6794896412773968e-08, 2.6794896468285145e-08, 0.0],
     [0.0, 0.0, 0.0, 1.0],
 ])
+# Recalibrated for this rig (2026-07-12, measured off the assembly drawing):
+# tip at +0.145 m forward, -0.030 m down in camera_link (X-fwd/Y-left/Z-up,
+# origin = optical center); gripper frame held horizontal while camera is tilted
+# 30deg down -> pitch -30deg about Y. (Point projection only uses the translation.)
 T_CAM_EE = np.array([
-    [1.601236272778861e-08, 0.5975900216637896, 0.8018018246473817, 0.12584794985962103],
-    [-0.9999999999999996, 2.679489641277399e-08, -4.963083675318166e-24, -0.00895],
-    [-2.1484196834999764e-08, -0.8018018246473815, 0.5975900216637897, 0.003582529990147798],
-    [0.0, 0.0, 0.0, 1.0],
+    [ 0.8660254, 0.0, -0.5,        0.145 ],
+    [ 0.0,       1.0,  0.0,        0.0   ],
+    [ 0.5,       0.0,  0.8660254, -0.030 ],
+    [ 0.0,       0.0,  0.0,        1.0   ],
 ])
 TIP_KIN = (T_OPT_CAM, T_CAM_EE)
 
@@ -129,7 +133,8 @@ def _out_mp4_path(ep_dir: Path, out_dir: Path | None) -> Path:
 
 
 def render_episode_video(ep_dir: Path, fps: int, codec: str, dpi: int = 100,
-                         out_dir: Path | None = None) -> bool:
+                         out_dir: Path | None = None,
+                         badge: str | None = None, badge_color: str = "#2e7d32") -> bool:
     """Render one side-by-side traj video. Returns True on success.
 
     Writes to <out_dir>/<session>_<episode>.mp4 when out_dir is set (all videos in one
@@ -165,6 +170,11 @@ def render_episode_video(ep_dir: Path, fps: int, codec: str, dpi: int = 100,
     ax_img = fig.add_subplot(1, 2, 1)
     ax3d = fig.add_subplot(1, 2, 2, projection="3d")
     fig.subplots_adjust(left=0.02, right=0.98, top=0.92, bottom=0.04, wspace=0.12)
+
+    if badge:  # optional status badge (colored block + text), top-left of the video
+        fig.text(0.005, 0.985, " " + badge + " ", color="white", fontsize=12,
+                 fontweight="bold", va="top", ha="left",
+                 bbox=dict(boxstyle="round,pad=0.35", fc=badge_color, ec="black", lw=1.0))
 
     first = cv.imread(str(images[0]))
     im_obj = ax_img.imshow(cv.cvtColor(first, cv.COLOR_BGR2RGB))
@@ -253,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-episodes", type=int, default=0, help="Stop after N episodes (0 = no limit)")
     p.add_argument("--output", type=Path, default=None,
                    help="Write ALL videos into this folder as <session>_<episode>.mp4 (default: <episode>/traj_sidebyside.mp4)")
+    p.add_argument("--badge", default=None, help="Optional status badge text drawn top-left of the video")
+    p.add_argument("--badge-color", default="#2e7d32", help="Badge background color (default green)")
     args = p.parse_args(argv)
 
     if not args.path.exists():
@@ -277,7 +289,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_episodes and ok >= args.max_episodes:
             break
         print(f"[{done+1}/{len(eps)}] {ep.parent.name}/{ep.name}")
-        if render_episode_video(ep, args.fps, args.codec, out_dir=args.output):
+        if render_episode_video(ep, args.fps, args.codec, out_dir=args.output,
+                                 badge=args.badge, badge_color=args.badge_color):
             ok += 1
         done += 1
     print(f"Done: {ok} video(s) rendered.")
