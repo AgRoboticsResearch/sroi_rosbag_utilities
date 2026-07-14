@@ -144,7 +144,16 @@ converting all sessions into one LeRobot dataset:
 ```bash
 # Writes /path/to/day/qc.csv and /path/to/day/qc.pdf
 python visualization/qc.py /path/to/day -o /path/to/day/qc
+```
 
+The per-episode QC page (default "rich" view) shows three panels per episode,
+mirroring the side-by-side trajectory videos: the RGB frame with the projected
+gripper-tip path (first video frame, left), the 3D trajectory (last video frame,
+right), and the gripper signal. Pass `--simple` for the fast 2D top-down trajectory
++ gripper layout; pass `--extrinsics-config` to use a different camera/gripper rig
+for the projection overlay.
+
+```bash
 python lerobot/sroi_to_lerobot.py \
     --data_path /path/to/day \
     --repo_id sroi/lab_picking \

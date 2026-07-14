@@ -4,8 +4,10 @@ QC tool for ORB-SLAM + gripper estimation outputs.
 
 Scans a session tree (default: <root>/*-png/episode_*/) and produces:
   - <out>.csv : per-episode metrics (path length, gripper std, category, ...)
-  - <out>.pdf : one summary page + one page per session with side-by-side
-                trajectory and gripper plots, color-coded by category.
+  - <out>.pdf : one summary page + one page per session. Each episode shows
+                [RGB+projected gripper path][3D trajectory][gripper] (the default
+                "rich" view, mirroring the traj videos); --simple reverts to a
+                2D top-down trajectory + gripper. Color-coded by category.
 
 Designed to be re-runnable as data updates. Idempotent — overwrites outputs.
 
@@ -66,6 +68,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.collections import LineCollection
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (registers the "3d" projection)
 import numpy as np
 
 
@@ -99,6 +103,10 @@ OUTER_HSPACE: float = 0.55
 OUTER_WSPACE: float = 0.30
 INNER_WSPACE: float = 0.30
 OUTER_MARGINS: tuple[float, float, float, float] = (0.04, 0.98, 0.95, 0.04)
+# Rich (default) layout: per-episode page = [RGB+projection][3D trajectory][gripper].
+EPISODES_PER_ROW_RICH: int = 2
+FIGSIZE_SESSION_RICH: tuple[float, float] = (13.0, 3.2)
+INNER_WSPACE_RICH: float = 0.25
 
 
 def load_filters(path: Path | None = None) -> None:
@@ -114,6 +122,7 @@ def load_filters(path: Path | None = None) -> None:
     global TRAJ_COLOR, GRIP_COLOR, PANEL_BG, GRIPPER_YLIM
     global EPISODES_PER_ROW, FIGSIZE_SESSION, FIGSIZE_SUMMARY, FIGSIZE_SUMMARY_BASE_HEIGHT
     global OUTER_HSPACE, OUTER_WSPACE, INNER_WSPACE, OUTER_MARGINS
+    global EPISODES_PER_ROW_RICH, FIGSIZE_SESSION_RICH, INNER_WSPACE_RICH
 
     filters_path = path or DEFAULT_FILTERS_PATH
     if not filters_path.exists():
@@ -150,6 +159,9 @@ def load_filters(path: Path | None = None) -> None:
     OUTER_WSPACE = float(d.get("outer_wspace", 0.30))
     INNER_WSPACE = float(d.get("inner_wspace", 0.30))
     OUTER_MARGINS = tuple(d.get("outer_margins", [0.04, 0.98, 0.95, 0.04]))
+    EPISODES_PER_ROW_RICH = int(d.get("episodes_per_row_rich", 2))
+    FIGSIZE_SESSION_RICH = tuple(d.get("figsize_session_rich", [13.0, 3.2]))
+    INNER_WSPACE_RICH = float(d.get("inner_wspace_rich", 0.25))
 
 
 # Auto-load at import so the importable API works without an explicit call.
@@ -375,6 +387,142 @@ def _plot_episode(axes, e: EpisodeQC, extent: tuple[float, float, float, float] 
     ax_grip.set_ylabel("gripper", fontsize=8)
 
 
+# ----------------------------------------------------------------------------
+# Rich (default) per-episode panels: RGB+projection | 3D trajectory | gripper.
+# These mirror visualization/visualize_traj_video.py's left panel at frame 0 and
+# right panel at the last frame, reusing that module's loaders + projection math.
+# ----------------------------------------------------------------------------
+
+_VIDEO_TOOL_CACHE = None
+
+
+def _video_tool():
+    """Lazily import cv2 and the sibling visualize_traj_video module.
+
+    Only needed for the rich PDF path, so importing here keeps --csv-only light.
+    Both files live in this directory; qc.py runs as `python visualization/qc.py`
+    (sys.path[0] is already this dir), but the bootstrap also covers the
+    `from visualization.qc import ...` API path.
+    """
+    global _VIDEO_TOOL_CACHE
+    if _VIDEO_TOOL_CACHE is not None:
+        return _VIDEO_TOOL_CACHE
+    import sys
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import cv2  # type: ignore
+    import visualize_traj_video as vt  # type: ignore
+    _VIDEO_TOOL_CACHE = (vt, cv2)
+    return _VIDEO_TOOL_CACHE
+
+
+def _draw_rgb_projection(ax_img, e: EpisodeQC, tip_kin, vt, cv2) -> None:
+    """Color frame 0 with the full gripper-tip path projected onto it (= the traj
+    video's left panel at its first frame). Green->red gradient + green start + blue stop.
+    """
+    ep = Path(e.path)
+    images = sorted([*ep.glob("color_*.png"), *ep.glob("color_*.jpg")])
+    first = cv2.imread(str(images[0])) if images else None
+    if first is None:
+        ax_img.text(0.5, 0.5, "no frame", ha="center", va="center",
+                    transform=ax_img.transAxes, fontsize=9)
+        ax_img.set_xticks([])
+        ax_img.set_yticks([])
+        return
+    ax_img.imshow(cv2.cvtColor(first, cv2.COLOR_BGR2RGB))
+    ax_img.set_xticks([])
+    ax_img.set_yticks([])
+    h, w = first.shape[:2]
+
+    poses = vt.load_poses(ep / "CameraTrajectoryTransformed.txt")
+    if poses is None:
+        poses = vt.load_poses(ep / "CameraTrajectory.txt")
+    K = vt.load_K(ep / "camera_info_color.json")
+    if poses is not None and len(poses) >= 2 and K is not None:
+        px, py = vt.project_future(poses, 0, K, tip_kin)
+        pts = np.column_stack([px, py])
+        if len(pts) >= 2:
+            segs = np.stack([pts[:-1], pts[1:]], axis=1)
+            lc = LineCollection([], linewidths=2.0, capstyle="round", zorder=4)
+            lc.set_segments(segs)
+            lc.set_colors(vt._green_red_gradient(len(segs)))
+            ax_img.add_collection(lc)
+        if len(pts):
+            ax_img.scatter([pts[0, 0]], [pts[0, 1]], c=["#00FF00"], s=40,
+                           zorder=6, edgecolors="black", linewidths=0.5)
+            if np.isfinite(pts[-1]).all():
+                ax_img.scatter([pts[-1, 0]], [pts[-1, 1]], c=["#0000FF"], s=40,
+                               zorder=6, edgecolors="black", linewidths=0.5)
+    ax_img.set_xlim(0, w)
+    ax_img.set_ylim(h, 0)  # image pixel coords (y increases downward)
+
+
+def _draw_3d_traj(ax3d, e: EpisodeQC) -> None:
+    """Full 3D trajectory (= the traj video's right panel at its last frame).
+
+    Per-episode fixed extent, blue path, green start, vermillion head, same view as
+    the video. Rasterized to keep the multi-page PDF size bounded.
+    """
+    pos = e.pos
+    if pos is None or len(pos) < 2:
+        ax3d.text2D(0.5, 0.5, "no traj", ha="center", va="center",
+                    transform=ax3d.transAxes, fontsize=9)
+        ax3d.set_axis_off()
+        return
+    x, y, z = pos[:, 0], pos[:, 1], pos[:, 2]
+    pad = max((pos.max(axis=0) - pos.min(axis=0)).max() * 0.08, 0.02)
+    lo = pos.min(axis=0) - pad
+    hi = pos.max(axis=0) + pad
+    ax3d.plot(x, y, z, color="#0072B2", lw=1.5, rasterized=True)
+    ax3d.scatter([x[0]], [y[0]], [z[0]], c=["#009E73"], s=18, rasterized=True)  # start
+    ax3d.scatter([x[-1]], [y[-1]], [z[-1]], c=["#D55E00"], s=22, zorder=5, rasterized=True)  # head
+    ax3d.set_xlim(lo[0], hi[0])
+    ax3d.set_ylim(lo[1], hi[1])
+    ax3d.set_zlim(lo[2], hi[2])
+    ax3d.set_xlabel("X (m)", fontsize=7)
+    ax3d.set_ylabel("Y (m)", fontsize=7)
+    ax3d.set_zlabel("Z (m)", fontsize=7)
+    ax3d.tick_params(labelsize=6)
+    try:
+        ax3d.set_box_aspect((hi[0] - lo[0], hi[1] - lo[1], max(hi[2] - lo[2], 1e-3)))
+    except Exception:
+        pass
+    ax3d.view_init(elev=22, azim=-60)
+    ax3d.set_rasterized(True)
+
+
+def _plot_episode_rich(axes, e: EpisodeQC, tip_kin, vt, cv2) -> None:
+    """Rich 3-panel per-episode row: RGB+projection | 3D trajectory | gripper."""
+    ax_img, ax3d, ax_grip = axes
+    cat_color = CATEGORY_COLORS.get(e.category, CATEGORY_DEFAULT_COLOR)
+    for ax in (ax_img, ax3d, ax_grip):
+        ax.set_facecolor(PANEL_BG)
+
+    _draw_rgb_projection(ax_img, e, tip_kin, vt, cv2)
+    ax_img.set_title(f"{e.episode}  ({e.path_length_cm:.1f} cm, {e.category})",
+                     fontsize=8, color=cat_color)
+
+    _draw_3d_traj(ax3d, e)
+    ax3d.set_title(f"3D  ({e.path_length_cm:.1f} cm)", fontsize=8, color=cat_color)
+
+    # Gripper — identical to the simple layout ("the gripper figure as now").
+    if e.grip is not None and len(e.grip) > 0:
+        t = np.arange(len(e.grip))
+        mask = np.isfinite(e.grip)
+        ax_grip.plot(t[mask], e.grip[mask], "-", linewidth=1.0, color=GRIP_COLOR)
+        if (~mask).any():
+            ax_grip.plot(t[~mask], np.zeros((~mask).sum()), "rx", markersize=4)
+        ax_grip.set_ylim(*GRIPPER_YLIM)
+    else:
+        ax_grip.text(0.5, 0.5, "no grip", ha="center", va="center",
+                     transform=ax_grip.transAxes, fontsize=9)
+    ax_grip.tick_params(labelsize=7)
+    ax_grip.grid(True, alpha=0.3)
+    ax_grip.set_xlabel("frame", fontsize=8)
+    ax_grip.set_ylabel("gripper", fontsize=8)
+
+
 def _render_summary_page(pdf: PdfPages, session_data: dict[str, list[EpisodeQC]]):
     sessions = sorted(session_data.keys())
     n = len(sessions)
@@ -425,20 +573,28 @@ def _render_summary_page(pdf: PdfPages, session_data: dict[str, list[EpisodeQC]]
 
 
 def _render_session_page(pdf: PdfPages, session_name: str, episodes: list[EpisodeQC],
-                         extent: tuple[float, float, float, float] | None = None):
+                         extent: tuple[float, float, float, float] | None = None,
+                         *, simple: bool = False, tip_kin=None):
     from matplotlib import gridspec
 
     episodes = sorted(episodes, key=lambda e: (CATEGORY_SORT_ORDER.get(e.category, 9),
                                                 -e.path_length_cm))
     n = len(episodes)
-    ncols = EPISODES_PER_ROW
-    nrows = int(np.ceil(n / ncols))
-    fig = plt.figure(figsize=(FIGSIZE_SESSION[0], FIGSIZE_SESSION[1] * nrows))
+    if simple:
+        eps_per_row, figsize, inner_w, inner_wspace = (
+            EPISODES_PER_ROW, FIGSIZE_SESSION, 2, INNER_WSPACE)
+        vt = cv2 = None
+    else:
+        eps_per_row, figsize, inner_w, inner_wspace = (
+            EPISODES_PER_ROW_RICH, FIGSIZE_SESSION_RICH, 3, INNER_WSPACE_RICH)
+        vt, cv2 = _video_tool()
+    nrows = int(np.ceil(n / eps_per_row))
+    fig = plt.figure(figsize=(figsize[0], figsize[1] * nrows))
 
     # Outer grid: one cell per episode. Generous wspace/hspace to make panels
     # read as distinct groups.
     outer = gridspec.GridSpec(
-        nrows, ncols, figure=fig,
+        nrows, eps_per_row, figure=fig,
         hspace=OUTER_HSPACE, wspace=OUTER_WSPACE,
         left=OUTER_MARGINS[0], right=OUTER_MARGINS[1],
         top=OUTER_MARGINS[2], bottom=OUTER_MARGINS[3],
@@ -452,18 +608,24 @@ def _render_session_page(pdf: PdfPages, session_name: str, episodes: list[Episod
                  fontsize=12, y=0.985)
 
     for i, e in enumerate(episodes):
-        row, col = divmod(i, ncols)
-        # Inner 1x2 grid: traj | gripper, tighter spacing inside the group
+        row, col = divmod(i, eps_per_row)
+        # Inner 1xN grid: the episode's panels, tighter spacing inside the group.
         inner = gridspec.GridSpecFromSubplotSpec(
-            1, 2, subplot_spec=outer[row, col], wspace=INNER_WSPACE,
+            1, inner_w, subplot_spec=outer[row, col], wspace=inner_wspace,
         )
-        ax_traj = fig.add_subplot(inner[0, 0])
-        ax_grip = fig.add_subplot(inner[0, 1])
-        _plot_episode((ax_traj, ax_grip), e, extent=extent)
+        if simple:
+            ax_traj = fig.add_subplot(inner[0, 0])
+            ax_grip = fig.add_subplot(inner[0, 1])
+            _plot_episode((ax_traj, ax_grip), e, extent=extent)
+        else:
+            ax_img = fig.add_subplot(inner[0, 0])
+            ax3d = fig.add_subplot(inner[0, 1], projection="3d")
+            ax_grip = fig.add_subplot(inner[0, 2])
+            _plot_episode_rich((ax_img, ax3d, ax_grip), e, tip_kin, vt, cv2)
 
     # Hide unused cells
-    for i in range(n, nrows * ncols):
-        row, col = divmod(i, ncols)
+    for i in range(n, nrows * eps_per_row):
+        row, col = divmod(i, eps_per_row)
         ax = fig.add_subplot(outer[row, col])
         ax.axis("off")
 
@@ -471,14 +633,22 @@ def _render_session_page(pdf: PdfPages, session_name: str, episodes: list[Episod
     plt.close(fig)
 
 
-def render_pdf(session_data: dict[str, list[EpisodeQC]], output: Path) -> None:
+def render_pdf(session_data: dict[str, list[EpisodeQC]], output: Path,
+               *, simple: bool = False, extrinsics_config: Path | None = None) -> None:
     """Render multi-page PDF: summary + one page per session.
 
-    All trajectory plots share one xy extent (computed across every episode in
-    session_data) so motion is visually comparable across pages.
+    Default (rich): each episode is [RGB+projection][3D trajectory][gripper], mirroring
+    the side-by-side traj videos. Pass simple=True for the fast 2D top-down layout.
+
+    In the simple layout all trajectory plots share one xy extent (computed across every
+    episode in session_data) so motion is visually comparable across pages.
     """
     output.parent.mkdir(parents=True, exist_ok=True)
     extent = _compute_traj_extent(session_data)
+    tip_kin = None
+    if not simple:
+        vt, _ = _video_tool()
+        tip_kin = vt.load_tip_kin(extrinsics_config or vt.DEFAULT_EXTRINSICS_CONFIG)
     with PdfPages(output) as pdf:
         _render_summary_page(pdf, session_data)
         # Sessions with most problems first
@@ -486,7 +656,8 @@ def render_pdf(session_data: dict[str, list[EpisodeQC]], output: Path) -> None:
             eps = item[1]
             return sum(1 for e in eps if e.category in PROBLEM_CATEGORIES)
         for name, eps in sorted(session_data.items(), key=lambda kv: (-issue_score(kv), kv[0])):
-            _render_session_page(pdf, name, eps, extent=extent)
+            _render_session_page(pdf, name, eps, extent=extent,
+                                 simple=simple, tip_kin=tip_kin)
 
 
 # ============================================================================
@@ -507,6 +678,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pdf-only", action="store_true", help="Skip CSV generation")
     p.add_argument("--filters", type=Path, default=None,
                    help="Path to a qc_filters.json override (default: configs/qc_filters.json next to this script)")
+    p.add_argument("--simple", action="store_true",
+                   help="Use the fast 2D top-down layout (no RGB/3D panels); default is the rich 3-panel page")
+    p.add_argument("--extrinsics-config", type=Path, default=None,
+                   help="Camera-to-gripper-tip JSON for the RGB projection overlay "
+                        "(default: configs/camera_gripper_extrinsics_sroi_v2_d405.json)")
     args = p.parse_args(argv)
 
     if args.filters is not None:
@@ -535,7 +711,8 @@ def main(argv: list[str] | None = None) -> int:
         if not keep_arrays:
             session_data = scan_sessions(args.root, pattern=args.pattern, keep_arrays=True)
         pdf_path = args.output.with_suffix(".pdf")
-        render_pdf(session_data, pdf_path)
+        render_pdf(session_data, pdf_path,
+                   simple=args.simple, extrinsics_config=args.extrinsics_config)
         print(f"  wrote {pdf_path}")
 
     # Print category breakdown

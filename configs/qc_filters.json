@@ -77,6 +77,11 @@
     "inner_wspace": 0.30,
     "outer_margins": [0.04, 0.98, 0.95, 0.04],
 
+    "_doc_rich": "Rich (default) per-episode page = [RGB+projection][3D trajectory][gripper]. Slower (3D over ~1000 eps); pass --simple for the 2D layout above.",
+    "episodes_per_row_rich": 2,
+    "figsize_session_rich": [13.0, 3.2],
+    "inner_wspace_rich": 0.25,
+
     "sort_problem_categories_to_top": true
   }
 }
